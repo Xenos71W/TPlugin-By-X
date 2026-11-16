@@ -5,7 +5,6 @@ using Terraria;
 using Terraria.ID;
 using TerrariaApi.Server;
 using TShockAPI;
-using TShockAPI.Hooks; // <-- INI YANG PENTING BIAR PLAYERSHOPEVENTARGS KEBACA
 
 namespace PotionShop;
 
@@ -15,8 +14,9 @@ public class PotionShopPlugin : TerrariaPlugin
     public override string Name => "PotionShop";
     public override string Author => "Brok";
     public override Version Version => new(1, 0, 0);
-    public override string Description => "Menambahkan Potion ke Dye Trader dan Flask ke Witch Doctor secara seimbang.";
+    public override string Description => "Menambahkan Potion ke Dye Trader dan Flask ke Witch Doctor.";
 
+    // Status toko per player
     private static readonly Dictionary<int, bool> PlayerHardmodeShop = new();
     private static readonly HashSet<int> VanillaShopPlayers = new();
 
@@ -24,9 +24,10 @@ public class PotionShopPlugin : TerrariaPlugin
 
     public override void Initialize()
     {
-        // Daftarin event pakai TShockAPI.Hooks
-        PlayerHooks.OnShop += OnShop;
+        // Register Hook untuk Ngetik NPC (NpcTalk)
+        ServerApi.Hooks.NetGetData.Register(this, OnGetData);
         
+        // Register Command
         Commands.ChatCommands.Add(new Command("potion.shop.hm", ToggleHardmodeShop, "hm"));
         Commands.ChatCommands.Add(new Command("potion.shop.switch", SwitchShopCmd, "switchshop", "switch"));
     }
@@ -35,7 +36,7 @@ public class PotionShopPlugin : TerrariaPlugin
     {
         if (disposing)
         {
-            PlayerHooks.OnShop -= OnShop;
+            ServerApi.Hooks.NetGetData.Deregister(this, OnGetData);
             PlayerHardmodeShop.Clear();
             VanillaShopPlayers.Clear();
         }
@@ -45,20 +46,15 @@ public class PotionShopPlugin : TerrariaPlugin
     private void ToggleHardmodeShop(CommandArgs args)
     {
         var plr = args.Player;
-
         if (!Main.hardMode)
         {
-            plr.SendErrorMessage("Dunia ini masih mode Pre-Hardmode! Kamu belum bisa mengakses toko Hardmode.");
+            plr.SendErrorMessage("Dunia masih Pre-Hardmode! Kamu belum bisa mengakses toko Hardmode.");
             return;
         }
 
-        if (!PlayerHardmodeShop.TryGetValue(plr.Index, out var isHm))
-        {
-            isHm = false;
-        }
-
+        PlayerHardmodeShop.TryGetValue(plr.Index, out var isHm);
         PlayerHardmodeShop[plr.Index] = !isHm;
-        plr.SendSuccessMessage($"Toko Dye Trader dialihkan ke mode: [{(!isHm ? "Hardmode" : "Pre-Hardmode")}]. Silakan buka kembali toko NPC.");
+        plr.SendSuccessMessage($"Toko Dye Trader dialihkan ke mode: [{(PlayerHardmodeShop[plr.Index] ? "Hardmode" : "Pre-Hardmode")}]. Silakan buka kembali toko.");
     }
 
     private void SwitchShopCmd(CommandArgs args)
@@ -67,142 +63,178 @@ public class PotionShopPlugin : TerrariaPlugin
         if (VanillaShopPlayers.Contains(plr.Index))
         {
             VanillaShopPlayers.Remove(plr.Index);
-            plr.SendSuccessMessage("Toko diubah ke mode: [Custom PotionShop]. Silakan buka kembali toko NPC.");
+            plr.SendSuccessMessage("Toko diubah ke mode: [Custom]. Silakan buka kembali toko.");
         }
         else
         {
             VanillaShopPlayers.Add(plr.Index);
-            plr.SendSuccessMessage("Toko diubah ke mode: [Vanilla/Asli]. Silakan buka kembali toko NPC.");
+            plr.SendSuccessMessage("Toko diubah ke mode: [Vanilla/Asli]. Silakan buka kembali toko.");
         }
     }
 
-    // PASTIKAN PARAMETERNYA ADALAH PlayerShopEventArgs DARI TShockAPI.Hooks
-    private void OnShop(PlayerShopEventArgs e)
+    private void OnGetData(GetDataEventArgs args)
     {
-        var npcType = e.Npc.type;
+        if (args.Handled || args.MsgID != PacketTypes.NpcTalk) return;
+
+        var index = args.Msg.readBuffer[args.Index];
+        var npcID = (short)(args.Msg.readBuffer[args.Index + 1] + (args.Msg.readBuffer[args.Index + 2] << 8));
         
+        if (index != args.Msg.whoAmI || npcID == -1) return;
+
+        var plr = TShock.Players[index];
+        if (plr == null || plr.TPlayer.talkNPC == npcID) return;
+
+        // Kalau player lagi mode Vanilla, biarin toko asli kebuka
+        if (VanillaShopPlayers.Contains(plr.Index)) return;
+
+        var npcType = Main.npc[npcID].type;
         if (npcType != NPCID.DyeTrader && npcType != NPCID.WitchDoctor) return;
-        
-        if (VanillaShopPlayers.Contains(e.Player.Index)) return;
 
-        // Bersihin toko asli
-        for (int i = 0; i < 40; i++)
-        {
-            e.ShopInventory.item[i] = new Item();
-        }
+        // Siapin daftar item
+        var shopItems = new List<(int itemId, int price)>();
 
-        // Isi toko sesuai NPC
         if (npcType == NPCID.DyeTrader)
         {
-            if (!PlayerHardmodeShop.TryGetValue(e.Player.Index, out var isHm))
-            {
-                isHm = false;
-            }
-
+            PlayerHardmodeShop.TryGetValue(plr.Index, out var isHm);
+            
             if (isHm && !Main.hardMode)
             {
                 isHm = false;
-                PlayerHardmodeShop[e.Player.Index] = false;
-                e.Player.SendErrorMessage("Dunia ini masih Pre-Hardmode! Toko otomatis dialihkan ke Pre-Hardmode.");
+                PlayerHardmodeShop[plr.Index] = false;
+                plr.SendErrorMessage("Dunia masih Pre-Hardmode! Toko dialihkan ke Pre-Hardmode.");
             }
 
-            if (isHm) FillDyeTraderHardmode(e.ShopInventory);
-            else FillDyeTraderPreHardmode(e.ShopInventory);
+            if (isHm) shopItems = GetDyeTraderHardmodeItems();
+            else shopItems = GetDyeTraderPreHardmodeItems();
         }
         else if (npcType == NPCID.WitchDoctor)
         {
-            FillWitchDoctor(e.ShopInventory);
+            shopItems = GetWitchDoctorItems();
         }
-    }
 
-    private void AddItem(Chest shop, int itemId, int price)
-    {
+        // Generate RawData (Format paket Terraria untuk toko)
+        var rawData = new byte[40][];
         for (int i = 0; i < 40; i++)
         {
-            if (shop.item[i].type == 0 || shop.item[i].stack == 0)
+            if (i < shopItems.Count)
             {
-                shop.item[i].SetDefaults(itemId);
-                shop.item[i].shopCustomPrice = price; // Harga dalam Copper
-                break;
+                var item = shopItems[i];
+                var idBytes = BitConverter.GetBytes((short)item.itemId);
+                var stackBytes = BitConverter.GetBytes((short)1);
+                var priceBytes = BitConverter.GetBytes(item.price);
+                
+                rawData[i] = new byte[]
+                {
+                    14, 0, 104, (byte)i, idBytes[0], idBytes[1], stackBytes[0], stackBytes[1], 0,
+                    priceBytes[0], priceBytes[1], priceBytes[2], priceBytes[3], 0
+                };
+            }
+            else
+            {
+                rawData[i] = new byte[] { 14, 0, 104, (byte)i, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
             }
         }
+
+        // Kirim paket toko custom secara terus menerus selama toko kebuka
+        var originalNpcID = npcID;
+        Task.Run(() =>
+        {
+            while (plr.TPlayer.talkNPC == originalNpcID && !VanillaShopPlayers.Contains(plr.Index))
+            {
+                foreach (var data in rawData)
+                {
+                    plr.SendRawData(data);
+                }
+                Task.Delay(500).Wait();
+            }
+        });
     }
 
-    private void FillDyeTraderPreHardmode(Chest shop)
+    private List<(int itemId, int price)> GetDyeTraderPreHardmodeItems()
     {
-        AddItem(shop, ItemID.LesserHealingPotion, Item.buyPrice(0, 0, 1, 0));
-        AddItem(shop, ItemID.LesserManaPotion, Item.buyPrice(0, 0, 1, 0));
-        AddItem(shop, ItemID.HealingPotion, Item.buyPrice(0, 0, 3, 0));
-        AddItem(shop, ItemID.ManaPotion, Item.buyPrice(0, 0, 3, 0));
-        
-        AddItem(shop, ItemID.IronskinPotion, Item.buyPrice(0, 0, 8, 0));
-        AddItem(shop, ItemID.SwiftnessPotion, Item.buyPrice(0, 0, 8, 0));
-        AddItem(shop, ItemID.RegenerationPotion, Item.buyPrice(0, 0, 8, 0));
-        AddItem(shop, ItemID.NightOwlPotion, Item.buyPrice(0, 0, 8, 0));
-        AddItem(shop, ItemID.ShinePotion, Item.buyPrice(0, 0, 8, 0));
-        AddItem(shop, ItemID.GillsPotion, Item.buyPrice(0, 0, 8, 0));
-        AddItem(shop, ItemID.MiningPotion, Item.buyPrice(0, 0, 8, 0));
-        AddItem(shop, ItemID.BuilderPotion, Item.buyPrice(0, 0, 8, 0));
-        AddItem(shop, ItemID.CalmingPotion, Item.buyPrice(0, 0, 8, 0));
-        AddItem(shop, ItemID.TrapsightPotion, Item.buyPrice(0, 0, 8, 0));
-        AddItem(shop, ItemID.ArcheryPotion, Item.buyPrice(0, 0, 8, 0));
-        AddItem(shop, ItemID.AmmoReservationPotion, Item.buyPrice(0, 0, 8, 0));
-        AddItem(shop, ItemID.WarmthPotion, Item.buyPrice(0, 0, 8, 0));
-        AddItem(shop, ItemID.WaterWalkingPotion, Item.buyPrice(0, 0, 8, 0));
-        AddItem(shop, ItemID.FeatherfallPotion, Item.buyPrice(0, 0, 8, 0));
-
-        AddItem(shop, ItemID.ObsidianSkinPotion, Item.buyPrice(0, 0, 15, 0));
-        AddItem(shop, ItemID.SpelunkerPotion, Item.buyPrice(0, 0, 15, 0));
-        AddItem(shop, ItemID.HunterPotion, Item.buyPrice(0, 0, 15, 0));
-        AddItem(shop, ItemID.BattlePotion, Item.buyPrice(0, 0, 15, 0));
-        AddItem(shop, ItemID.HeartreachPotion, Item.buyPrice(0, 0, 15, 0));
-        AddItem(shop, ItemID.ThornsPotion, Item.buyPrice(0, 0, 15, 0));
-        AddItem(shop, ItemID.InvisibilityPotion, Item.buyPrice(0, 0, 15, 0));
-        AddItem(shop, ItemID.MagicPowerPotion, Item.buyPrice(0, 0, 15, 0));
-        AddItem(shop, ItemID.ManaRegenerationPotion, Item.buyPrice(0, 0, 15, 0));
-        AddItem(shop, ItemID.SummoningPotion, Item.buyPrice(0, 0, 15, 0));
-        AddItem(shop, ItemID.TitanPotion, Item.buyPrice(0, 0, 15, 0));
-        AddItem(shop, ItemID.FlipperPotion, Item.buyPrice(0, 0, 15, 0));
-        AddItem(shop, ItemID.FishingPotion, Item.buyPrice(0, 0, 15, 0));
-        AddItem(shop, ItemID.CratePotion, Item.buyPrice(0, 0, 15, 0));
-        AddItem(shop, ItemID.GravitationPotion, Item.buyPrice(0, 0, 15, 0));
-
-        AddItem(shop, ItemID.EndurancePotion, Item.buyPrice(0, 0, 20, 0));
-        AddItem(shop, ItemID.WrathPotion, Item.buyPrice(0, 0, 20, 0));
-        AddItem(shop, ItemID.RagePotion, Item.buyPrice(0, 0, 20, 0));
-        AddItem(shop, ItemID.InfernoPotion, Item.buyPrice(0, 0, 20, 0));
+        return new List<(int, int)>
+        {
+            (ItemID.LesserHealingPotion, Item.buyPrice(0, 0, 1, 0)),
+            (ItemID.LesserManaPotion, Item.buyPrice(0, 0, 1, 0)),
+            (ItemID.HealingPotion, Item.buyPrice(0, 0, 3, 0)),
+            (ItemID.ManaPotion, Item.buyPrice(0, 0, 3, 0)),
+            (ItemID.IronskinPotion, Item.buyPrice(0, 0, 8, 0)),
+            (ItemID.SwiftnessPotion, Item.buyPrice(0, 0, 8, 0)),
+            (ItemID.RegenerationPotion, Item.buyPrice(0, 0, 8, 0)),
+            (ItemID.NightOwlPotion, Item.buyPrice(0, 0, 8, 0)),
+            (ItemID.ShinePotion, Item.buyPrice(0, 0, 8, 0)),
+            (ItemID.GillsPotion, Item.buyPrice(0, 0, 8, 0)),
+            (ItemID.MiningPotion, Item.buyPrice(0, 0, 8, 0)),
+            (ItemID.BuilderPotion, Item.buyPrice(0, 0, 8, 0)),
+            (ItemID.CalmingPotion, Item.buyPrice(0, 0, 8, 0)),
+            (ItemID.TrapsightPotion, Item.buyPrice(0, 0, 8, 0)),
+            (ItemID.ArcheryPotion, Item.buyPrice(0, 0, 8, 0)),
+            (ItemID.AmmoReservationPotion, Item.buyPrice(0, 0, 8, 0)),
+            (ItemID.WarmthPotion, Item.buyPrice(0, 0, 8, 0)),
+            (ItemID.WaterWalkingPotion, Item.buyPrice(0, 0, 8, 0)),
+            (ItemID.FeatherfallPotion, Item.buyPrice(0, 0, 8, 0)),
+            (ItemID.ObsidianSkinPotion, Item.buyPrice(0, 0, 15, 0)),
+            (ItemID.SpelunkerPotion, Item.buyPrice(0, 0, 15, 0)),
+            (ItemID.HunterPotion, Item.buyPrice(0, 0, 15, 0)),
+            (ItemID.BattlePotion, Item.buyPrice(0, 0, 15, 0)),
+            (ItemID.HeartreachPotion, Item.buyPrice(0, 0, 15, 0)),
+            (ItemID.ThornsPotion, Item.buyPrice(0, 0, 15, 0)),
+            (ItemID.InvisibilityPotion, Item.buyPrice(0, 0, 15, 0)),
+            (ItemID.MagicPowerPotion, Item.buyPrice(0, 0, 15, 0)),
+            (ItemID.ManaRegenerationPotion, Item.buyPrice(0, 0, 15, 0)),
+            (ItemID.SummoningPotion, Item.buyPrice(0, 0, 15, 0)),
+            (ItemID.TitanPotion, Item.buyPrice(0, 0, 15, 0)),
+            (ItemID.FlipperPotion, Item.buyPrice(0, 0, 15, 0)),
+            (ItemID.FishingPotion, Item.buyPrice(0, 0, 15, 0)),
+            (ItemID.CratePotion, Item.buyPrice(0, 0, 15, 0)),
+            (ItemID.GravitationPotion, Item.buyPrice(0, 0, 15, 0)),
+            (ItemID.EndurancePotion, Item.buyPrice(0, 0, 20, 0)),
+            (ItemID.WrathPotion, Item.buyPrice(0, 0, 20, 0)),
+            (ItemID.RagePotion, Item.buyPrice(0, 0, 20, 0)),
+            (ItemID.InfernoPotion, Item.buyPrice(0, 0, 20, 0))
+        };
     }
 
-    private void FillDyeTraderHardmode(Chest shop)
+    private List<(int itemId, int price)> GetDyeTraderHardmodeItems()
     {
-        AddItem(shop, ItemID.GreaterHealingPotion, Item.buyPrice(0, 0, 30, 0));
-        AddItem(shop, ItemID.GreaterManaPotion, Item.buyPrice(0, 0, 30, 0));
-        AddItem(shop, ItemID.LifeforcePotion, Item.buyPrice(0, 0, 75, 0));
+        var items = new List<(int, int)>
+        {
+            (ItemID.GreaterHealingPotion, Item.buyPrice(0, 0, 30, 0)),
+            (ItemID.GreaterManaPotion, Item.buyPrice(0, 0, 30, 0)),
+            (ItemID.LifeforcePotion, Item.buyPrice(0, 0, 75, 0))
+        };
 
         if (NPC.downedTowerSolar && NPC.downedTowerVortex && NPC.downedTowerNebula && NPC.downedTowerStardust)
         {
-            AddItem(shop, ItemID.SuperHealingPotion, Item.buyPrice(0, 1, 50, 0));
-            AddItem(shop, ItemID.SuperManaPotion, Item.buyPrice(0, 1, 50, 0));
+            items.Add((ItemID.SuperHealingPotion, Item.buyPrice(0, 1, 50, 0)));
+            items.Add((ItemID.SuperManaPotion, Item.buyPrice(0, 1, 50, 0)));
         }
+
+        return items;
     }
 
-    private void FillWitchDoctor(Chest shop)
+    private List<(int itemId, int price)> GetWitchDoctorItems()
     {
-        AddItem(shop, ItemID.FlaskofFire, Item.buyPrice(0, 0, 20, 0));
-        AddItem(shop, ItemID.FlaskofPoison, Item.buyPrice(0, 0, 20, 0));
+        var items = new List<(int, int)>
+        {
+            (ItemID.FlaskofFire, Item.buyPrice(0, 0, 20, 0)),
+            (ItemID.FlaskofPoison, Item.buyPrice(0, 0, 20, 0))
+        };
 
         if (Main.hardMode)
         {
-            AddItem(shop, ItemID.FlaskofGold, Item.buyPrice(0, 0, 50, 0));
-            AddItem(shop, ItemID.FlaskofIchor, Item.buyPrice(0, 0, 50, 0));
-            AddItem(shop, ItemID.FlaskofCursedFlames, Item.buyPrice(0, 0, 50, 0));
-            AddItem(shop, ItemID.FlaskofParty, Item.buyPrice(0, 0, 20, 0));
+            items.Add((ItemID.FlaskofGold, Item.buyPrice(0, 0, 50, 0)));
+            items.Add((ItemID.FlaskofIchor, Item.buyPrice(0, 0, 50, 0)));
+            items.Add((ItemID.FlaskofCursedFlames, Item.buyPrice(0, 0, 50, 0)));
+            items.Add((ItemID.FlaskofParty, Item.buyPrice(0, 0, 20, 0)));
         }
 
         if (NPC.downedPlantBoss)
         {
-            AddItem(shop, ItemID.FlaskofNanites, Item.buyPrice(0, 0, 60, 0));
-            AddItem(shop, ItemID.FlaskofVenom, Item.buyPrice(0, 0, 75, 0));
+            items.Add((ItemID.FlaskofNanites, Item.buyPrice(0, 0, 60, 0)));
+            items.Add((ItemID.FlaskofVenom, Item.buyPrice(0, 0, 75, 0)));
         }
+
+        return items;
     }
 }
