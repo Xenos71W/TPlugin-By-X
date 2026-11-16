@@ -58,7 +58,7 @@ public class DNDBossFightPlugin : TerrariaPlugin
     private void TogglePlugin(CommandArgs args)
     {
         _pluginEnabled = !_pluginEnabled;
-        args.Player.SendSuccessMessage($"[DNDBossFight] Plugin {( _pluginEnabled ? "diaktifkan" : "dinonaktifkan" )}.");
+        args.Player.SendSuccessMessage($"[DNDBossFight] Plugin {(_pluginEnabled ? "diaktifkan" : "dinonaktifkan")}.");
 
         // Jika dinonaktifkan, kembalikan pengaturan tombstone
         if (!_pluginEnabled && _bossWasActive)
@@ -100,36 +100,37 @@ public class DNDBossFightPlugin : TerrariaPlugin
     }
 
     private void OnNpcSpawn(NpcSpawnEventArgs args)
-{
-    if (!_pluginEnabled) return;
-
-    // PERBAIKAN: Gunakan args.NpcId untuk mendapatkan index NPC
-    var npc = Main.npc[args.NpcId];
-    if (npc == null || !npc.active) return;
-
-    // Jangan batalkan spawn jika NPC tersebut adalah boss
-    if (npc.boss || npc.type == NPCID.MoonLordCore || npc.type == NPCID.MoonLordHand || npc.type == NPCID.MoonLordHead)
-        return;
-
-    // Cari boss aktif terdekat
-    Vector2? nearestBossPos = null;
-    float nearestDistSq = float.MaxValue;
-
-    foreach (var boss in Main.npc)
     {
-        if (!boss.active || !boss.boss) continue;
+        if (!_pluginEnabled) return;
 
-        float distSq = Vector2.DistanceSquared(boss.Center, npc.Center);
-        if (distSq < nearestDistSq)
+        // Gunakan args.NpcId untuk mendapatkan index NPC
+        var npc = Main.npc[args.NpcId];
+        if (npc == null || !npc.active) return;
+
+        // Jangan batalkan spawn jika NPC tersebut adalah boss (atau bagian dari boss)
+        if (npc.boss || npc.type == NPCID.MoonLordCore || npc.type == NPCID.MoonLordHand || npc.type == NPCID.MoonLordHead)
+            return;
+
+        // Cari boss aktif terdekat
+        Vector2? nearestBossPos = null;
+        float nearestDistSq = float.MaxValue;
+
+        foreach (var boss in Main.npc)
         {
-            nearestDistSq = distSq;
-            nearestBossPos = boss.Center;
-        }
-    }
+            if (!boss.active || !boss.boss) continue;
 
-    // Jika ada boss dalam radius, batalkan spawn
-    if (nearestBossPos.HasValue && nearestDistSq <= BossProtectionRadius * BossProtectionRadius)
-    {
-        args.Handled = true; // Batalkan spawn NPC
+            float distSq = Vector2.DistanceSquared(boss.Center, npc.Center);
+            if (distSq < nearestDistSq)
+            {
+                nearestDistSq = distSq;
+                nearestBossPos = boss.Center;
+            }
+        }
+
+        // Jika ada boss dalam radius, batalkan spawn
+        if (nearestBossPos.HasValue && nearestDistSq <= BossProtectionRadius * BossProtectionRadius)
+        {
+            args.Handled = true; // Batalkan spawn NPC
+        }
     }
 }
