@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Xna.Framework;
 using Terraria;
@@ -13,7 +14,7 @@ public class DNDBossFightPlugin : TerrariaPlugin
 {
     public override string Name => "DNDBossFight";
     public override string Author => "Brok";
-    public override Version Version => new(1, 0, 1); // Versi dinaikkan
+    public override Version Version => new(1, 0, 2); // Versi dinaikkan lagi
     public override string Description => "Mencegah spawn monster di sekitar boss dan menonaktifkan tombstone saat melawan boss.";
 
     // Radius (dalam tiles) di sekitar boss yang tidak boleh ada monster spawn
@@ -30,7 +31,7 @@ public class DNDBossFightPlugin : TerrariaPlugin
         _originalDisableTombstones = TShock.Config.Settings.DisableTombstones;
 
         ServerApi.Hooks.GameUpdate.Register(this, OnGameUpdate);
-        ServerApi.Hooks.NpcSpawn.Register(this, OnNpcSpawn);
+        ServerApi.Hooks.NpcSpawn.Register(this, OnNpcSpawn); // Tetap dipakai buat jaga-jaga
 
         Commands.ChatCommands.Add(new Command("dndboss.admin", TogglePlugin, "dndboss"));
     }
@@ -64,18 +65,20 @@ public class DNDBossFightPlugin : TerrariaPlugin
     {
         if (!_pluginEnabled) return;
 
-        // Cek apakah ada boss yang aktif
+        // 1. Cek apakah ada boss yang aktif dan simpan posisinya
         bool bossActive = false;
+        var activeBosses = new List<NPC>();
+        
         foreach (var npc in Main.npc)
         {
             if (npc.active && npc.boss)
             {
                 bossActive = true;
-                break;
+                activeBosses.Add(npc);
             }
         }
 
-        // Kelola pengaturan tombstone berdasarkan status boss
+        // 2. Kelola pengaturan tombstone berdasarkan status boss
         if (bossActive && !_bossWasActive)
         {
             _originalDisableTombstones = TShock.Config.Settings.DisableTombstones;
@@ -87,6 +90,31 @@ public class DNDBossFightPlugin : TerrariaPlugin
             TShock.Config.Settings.DisableTombstones = _originalDisableTombstones;
             _bossWasActive = false;
         }
+
+        // 3. THE KILL AURA: Bersihkan monster biasa di sekitar boss
+        if (bossActive)
+        {
+            float radiusSq = BossProtectionRadius * BossProtectionRadius;
+
+            foreach (var npc in Main.npc)
+            {
+                if (!npc.active) continue;
+
+                // Abaikan Boss, NPC Kota, Hewan peliharaan, dan Minion Boss (realLife != -1)
+                if (npc.boss || npc.townNPC || npc.friendly || npc.realLife != -1) continue;
+
+                foreach (var boss in activeBosses)
+                {
+                    if (Vector2.DistanceSquared(boss.Center, npc.Center) <= radiusSq)
+                    {
+                        // Hapus paksa monster dari server (dan client)
+                        npc.active = false;
+                        npc.type = 0;
+                        break; // Keluar dari loop boss karena NPC sudah dihapus
+                    }
+                }
+            }
+        }
     }
 
     private void OnNpcSpawn(NpcSpawnEventArgs args)
@@ -96,33 +124,20 @@ public class DNDBossFightPlugin : TerrariaPlugin
         var npc = Main.npc[args.NpcId];
         if (npc == null || !npc.active) return;
 
-        // Jangan batalkan spawn jika itu Boss, NPC Kota, atau Hewan (Critter)
-        if (npc.boss || npc.townNPC || npc.friendly || npc.type == NPCID.MoonLordCore || npc.type == NPCID.MoonLordHand || npc.type == NPCID.MoonLordHead)
-            return;
-
-        Vector2? nearestBossPos = null;
-        float nearestDistSq = float.MaxValue;
+        // Abaikan Boss, NPC Kota, Hewan, dan Minion Boss
+        if (npc.boss || npc.townNPC || npc.friendly || npc.realLife != -1) return;
 
         foreach (var boss in Main.npc)
         {
             if (!boss.active || !boss.boss) continue;
 
-            float distSq = Vector2.DistanceSquared(boss.Center, npc.Center);
-            if (distSq < nearestDistSq)
+            if (Vector2.DistanceSquared(boss.Center, npc.Center) <= BossProtectionRadius * BossProtectionRadius)
             {
-                nearestDistSq = distSq;
-                nearestBossPos = boss.Center;
+                args.Handled = true; 
+                npc.active = false;
+                npc.type = 0;
+                break;
             }
-        }
-
-        // Jika ada boss dalam radius, HANCURKAN NPC tersebut secara paksa
-        if (nearestBossPos.HasValue && nearestDistSq <= BossProtectionRadius * BossProtectionRadius)
-        {
-            args.Handled = true; 
-            
-            // Paksa matikan NPC (ini yang bikin pasti berhasil)
-            npc.active = false; 
-            npc.type = 0;
         }
     }
 }
