@@ -5,7 +5,7 @@ using Terraria;
 using Terraria.ID;
 using TerrariaApi.Server;
 using TShockAPI;
-using TShockAPI.Hooks;
+using TShockAPI.Hooks; // <-- INI YANG PENTING BIAR PLAYERSHOPEVENTARGS KEBACA
 
 namespace PotionShop;
 
@@ -17,22 +17,17 @@ public class PotionShopPlugin : TerrariaPlugin
     public override Version Version => new(1, 0, 0);
     public override string Description => "Menambahkan Potion ke Dye Trader dan Flask ke Witch Doctor secara seimbang.";
 
-    // Nyimpen status toko HM/Pre-HM per player
     private static readonly Dictionary<int, bool> PlayerHardmodeShop = new();
-    
-    // Nyimpen status Vanilla/Custom per player
     private static readonly HashSet<int> VanillaShopPlayers = new();
 
     public PotionShopPlugin(Main game) : base(game) { }
 
     public override void Initialize()
     {
+        // Daftarin event pakai TShockAPI.Hooks
         PlayerHooks.OnShop += OnShop;
         
-        // Command /hm buat ganti toko Dye Trader ke Hardmode
         Commands.ChatCommands.Add(new Command("potion.shop.hm", ToggleHardmodeShop, "hm"));
-        
-        // Command /switchshop buat balik ke toko asli
         Commands.ChatCommands.Add(new Command("potion.shop.switch", SwitchShopCmd, "switchshop", "switch"));
     }
 
@@ -81,17 +76,16 @@ public class PotionShopPlugin : TerrariaPlugin
         }
     }
 
+    // PASTIKAN PARAMETERNYA ADALAH PlayerShopEventArgs DARI TShockAPI.Hooks
     private void OnShop(PlayerShopEventArgs e)
     {
         var npcType = e.Npc.type;
         
-        // Cuma nge-override Dye Trader (Potion) dan Witch Doctor (Flask)
         if (npcType != NPCID.DyeTrader && npcType != NPCID.WitchDoctor) return;
         
-        // Kalau player lagi mode Vanilla, biarin toko aslinya muncul
         if (VanillaShopPlayers.Contains(e.Player.Index)) return;
 
-        // Bersihin toko asli dari NPC tersebut
+        // Bersihin toko asli
         for (int i = 0; i < 40; i++)
         {
             e.ShopInventory.item[i] = new Item();
@@ -105,7 +99,6 @@ public class PotionShopPlugin : TerrariaPlugin
                 isHm = false;
             }
 
-            // Proteksi kalau player maksa HM padahal world belum HM
             if (isHm && !Main.hardMode)
             {
                 isHm = false;
@@ -129,7 +122,7 @@ public class PotionShopPlugin : TerrariaPlugin
             if (shop.item[i].type == 0 || shop.item[i].stack == 0)
             {
                 shop.item[i].SetDefaults(itemId);
-                shop.item[i].shopCustomPrice = price; // Harga dalam Copper (100 = 1 Silver)
+                shop.item[i].shopCustomPrice = price; // Harga dalam Copper
                 break;
             }
         }
@@ -151,7 +144,7 @@ public class PotionShopPlugin : TerrariaPlugin
         AddItem(shop, ItemID.MiningPotion, Item.buyPrice(0, 0, 8, 0));
         AddItem(shop, ItemID.BuilderPotion, Item.buyPrice(0, 0, 8, 0));
         AddItem(shop, ItemID.CalmingPotion, Item.buyPrice(0, 0, 8, 0));
-        AddItem(shop, ItemID.TrapsightPotion, Item.buyPrice(0, 0, 8, 0)); // Dangersense
+        AddItem(shop, ItemID.TrapsightPotion, Item.buyPrice(0, 0, 8, 0));
         AddItem(shop, ItemID.ArcheryPotion, Item.buyPrice(0, 0, 8, 0));
         AddItem(shop, ItemID.AmmoReservationPotion, Item.buyPrice(0, 0, 8, 0));
         AddItem(shop, ItemID.WarmthPotion, Item.buyPrice(0, 0, 8, 0));
@@ -186,17 +179,15 @@ public class PotionShopPlugin : TerrariaPlugin
         AddItem(shop, ItemID.GreaterManaPotion, Item.buyPrice(0, 0, 30, 0));
         AddItem(shop, ItemID.LifeforcePotion, Item.buyPrice(0, 0, 75, 0));
 
-        // Super Potion cuma muncul kalau udah ngalahin 4 Pillar (Solar, Vortex, Nebula, Stardust)
         if (NPC.downedTowerSolar && NPC.downedTowerVortex && NPC.downedTowerNebula && NPC.downedTowerStardust)
         {
-            AddItem(shop, ItemID.SuperHealingPotion, Item.buyPrice(0, 1, 50, 0)); // 1 Gold 50 Silver
+            AddItem(shop, ItemID.SuperHealingPotion, Item.buyPrice(0, 1, 50, 0));
             AddItem(shop, ItemID.SuperManaPotion, Item.buyPrice(0, 1, 50, 0));
         }
     }
 
     private void FillWitchDoctor(Chest shop)
     {
-        // Pre-Hardmode
         AddItem(shop, ItemID.FlaskofFire, Item.buyPrice(0, 0, 20, 0));
         AddItem(shop, ItemID.FlaskofPoison, Item.buyPrice(0, 0, 20, 0));
 
@@ -208,7 +199,6 @@ public class PotionShopPlugin : TerrariaPlugin
             AddItem(shop, ItemID.FlaskofParty, Item.buyPrice(0, 0, 20, 0));
         }
 
-        // Post-Plantera (Nanites & Venom)
         if (NPC.downedPlantBoss)
         {
             AddItem(shop, ItemID.FlaskofNanites, Item.buyPrice(0, 0, 60, 0));
