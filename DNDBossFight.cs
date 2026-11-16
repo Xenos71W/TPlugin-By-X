@@ -1,143 +1,205 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using Microsoft.Xna.Framework;
+using System.IO;
+using Newtonsoft.Json;
 using Terraria;
-using Terraria.ID;
 using TerrariaApi.Server;
 using TShockAPI;
+using TShockAPI.Hooks;
 
-namespace DNDBossFight;
-
-[ApiVersion(2, 1)]
-public class DNDBossFightPlugin : TerrariaPlugin
+namespace BossFocus
 {
-    public override string Name => "DNDBossFight";
-    public override string Author => "Brok";
-    public override Version Version => new(1, 0, 2); // Versi dinaikkan lagi
-    public override string Description => "Mencegah spawn monster di sekitar boss dan menonaktifkan tombstone saat melawan boss.";
-
-    // Radius (dalam tiles) di sekitar boss yang tidak boleh ada monster spawn
-    private const float BossProtectionRadius = 120f;
-
-    private bool _originalDisableTombstones;
-    private bool _pluginEnabled = true;
-    private bool _bossWasActive = false;
-
-    public DNDBossFightPlugin(Main game) : base(game) { }
-
-    public override void Initialize()
+    [ApiVersion(2, 1)]
+    public class BossFocusPlugin : TerrariaPlugin
     {
-        _originalDisableTombstones = TShock.Config.Settings.DisableTombstones;
+        public override string Name => "BossFocus";
+        public override string Author => "You";
+        public override string Description =>
+            "Saat boss aktif: monster biasa di sekitar boss tidak spawn & tidak ada tombstone saat player mati.";
+        public override Version Version => new Version(1, 0, 0, 0);
 
-        ServerApi.Hooks.GameUpdate.Register(this, OnGameUpdate);
-        ServerApi.Hooks.NpcSpawn.Register(this, OnNpcSpawn); // Tetap dipakai buat jaga-jaga
+        private string _configPath;
+        private BossFocusConfig _config = new BossFocusConfig();
 
-        Commands.ChatCommands.Add(new Command("dndboss.admin", TogglePlugin, "dndboss"));
-    }
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing)
+        // ID projectile tombstone (Tombstone, Gravestone, dst, + RichGravestone1-5)
+        private static readonly HashSet<short> TombstoneProjectiles = new HashSet<short>
         {
-            ServerApi.Hooks.GameUpdate.Deregister(this, OnGameUpdate);
-            ServerApi.Hooks.NpcSpawn.Deregister(this, OnNpcSpawn);
-            Commands.ChatCommands.RemoveAll(c => c.CommandDelegate == TogglePlugin);
+            43, 201, 202, 203, 204, 205, 527, 528, 529, 530, 531
+        };
 
-            TShock.Config.Settings.DisableTombstones = _originalDisableTombstones;
+        // NPC yang selalu boleh spawn (bagian tubuh boss yang bersegmen)
+        private static readonly HashSet<int> AlwaysAllowedNpcs = new HashSet<int>
+        {
+            13, 14, 15,       // Eater of Worlds (head, body, tail)
+            135, 136,         // The Destroyer (body, tail)
+            114,              // Wall of Flesh eye
+            396, 397, 398     // Moon Lord (head, hand, core)
+        };
+
+        public BossFocusPlugin(Main game) : base(game) { }
+
+        public override void Initialize()
+        {
+            _configPath = Path.Combine(TShock.SavePath, "BossFocus.json");
+            LoadConfig();
+
+            ServerApi.Hooks.NpcSpawn.Register(this, OnNpcSpawn);
+            GetDataHandlers.NewProjectile += OnNewProjectile;
+            GeneralHooks.ReloadEvent += OnReload;
         }
-        base.Dispose(disposing);
-    }
 
-    private void TogglePlugin(CommandArgs args)
-    {
-        _pluginEnabled = !_pluginEnabled;
-        args.Player.SendSuccessMessage($"[DNDBossFight] Plugin {(_pluginEnabled ? "diaktifkan" : "dinonaktifkan")}.");
-
-        if (!_pluginEnabled && _bossWasActive)
+        protected override void Dispose(bool disposing)
         {
-            TShock.Config.Settings.DisableTombstones = _originalDisableTombstones;
-            _bossWasActive = false;
-        }
-    }
-
-    private void OnGameUpdate(EventArgs args)
-    {
-        if (!_pluginEnabled) return;
-
-        // 1. Cek apakah ada boss yang aktif dan simpan posisinya
-        bool bossActive = false;
-        var activeBosses = new List<NPC>();
-        
-        foreach (var npc in Main.npc)
-        {
-            if (npc.active && npc.boss)
+            if (disposing)
             {
-                bossActive = true;
-                activeBosses.Add(npc);
+                ServerApi.Hooks.NpcSpawn.Deregister(this, OnNpcSpawn);
+                GetDataHandlers.NewProjectile -= OnNewProjectile;
+                GeneralHooks.ReloadEvent -= OnReload;
             }
+            base.Dispose(disposing);
         }
 
-        // 2. Kelola pengaturan tombstone berdasarkan status boss
-        if (bossActive && !_bossWasActive)
-        {
-            _originalDisableTombstones = TShock.Config.Settings.DisableTombstones;
-            TShock.Config.Settings.DisableTombstones = true;
-            _bossWasActive = true;
-        }
-        else if (!bossActive && _bossWasActive)
-        {
-            TShock.Config.Settings.DisableTombstones = _originalDisableTombstones;
-            _bossWasActive = false;
-        }
+        // ---------------------------------------------------------------
+        // Config
+        // ---------------------------------------------------------------
 
-        // 3. THE KILL AURA: Bersihkan monster biasa di sekitar boss
-        if (bossActive)
+        private void LoadConfig()
         {
-            float radiusSq = BossProtectionRadius * BossProtectionRadius;
-
-            foreach (var npc in Main.npc)
+            try
             {
-                if (!npc.active) continue;
-
-                // Abaikan Boss, NPC Kota, Hewan peliharaan, dan Minion Boss (realLife != -1)
-                if (npc.boss || npc.townNPC || npc.friendly || npc.realLife != -1) continue;
-
-                foreach (var boss in activeBosses)
+                if (File.Exists(_configPath))
                 {
-                    if (Vector2.DistanceSquared(boss.Center, npc.Center) <= radiusSq)
-                    {
-                        // Hapus paksa monster dari server (dan client)
-                        npc.active = false;
-                        npc.type = 0;
-                        break; // Keluar dari loop boss karena NPC sudah dihapus
-                    }
+                    var loaded = JsonConvert.DeserializeObject<BossFocusConfig>(File.ReadAllText(_configPath));
+                    _config = loaded ?? new BossFocusConfig();
                 }
+                else
+                {
+                    _config = new BossFocusConfig();
+                }
+
+                // Tulis ulang supaya field baru ikut muncul di file
+                File.WriteAllText(_configPath, JsonConvert.SerializeObject(_config, Formatting.Indented));
             }
+            catch (Exception ex)
+            {
+                TShock.Log.ConsoleError($"[BossFocus] Gagal load config, pakai default: {ex.Message}");
+                _config = new BossFocusConfig();
+            }
+        }
+
+        private void OnReload(ReloadEventArgs e)
+        {
+            LoadConfig();
+            e.Player?.SendSuccessMessage("[BossFocus] Config di-reload.");
+        }
+
+        // ---------------------------------------------------------------
+        // Blokir spawn monster di area boss
+        // ---------------------------------------------------------------
+
+        private void OnNpcSpawn(NpcSpawnEventArgs args)
+        {
+            if (!_config.Enabled || !_config.BlockMonsterSpawns || args.Handled)
+                return;
+
+            int id = args.NpcId;
+            if (id < 0 || id >= Main.maxNPCs)
+                return;
+
+            NPC npc = Main.npc[id];
+            if (npc == null || IsExempt(npc))
+                return;
+
+            float areaPx = _config.BossAreaRadiusTiles * 16f;
+            float minionPx = _config.BossMinionRadiusTiles * 16f;
+            float areaSq = areaPx * areaPx;
+            float minionSq = minionPx * minionPx;
+
+            bool inBossArea = false;
+
+            for (int i = 0; i < Main.maxNPCs; i++)
+            {
+                if (i == id)
+                    continue;
+
+                NPC boss = Main.npc[i];
+                if (boss == null || !boss.active || !boss.boss)
+                    continue;
+
+                float dx = boss.Center.X - npc.Center.X;
+                float dy = boss.Center.Y - npc.Center.Y;
+                float distSq = dx * dx + dy * dy;
+
+                // Sangat dekat boss = anak buah boss sendiri, jangan diblokir
+                if (distSq <= minionSq)
+                    return;
+
+                if (distSq <= areaSq)
+                    inBossArea = true;
+            }
+
+            if (inBossArea)
+                args.Handled = true;
+        }
+
+        private static bool IsExempt(NPC npc)
+        {
+            return npc.boss
+                || npc.friendly
+                || npc.townNPC
+                || npc.CountsAsACritter
+                || AlwaysAllowedNpcs.Contains(npc.type);
+        }
+
+        // ---------------------------------------------------------------
+        // Blokir tombstone saat mati di dekat boss
+        // ---------------------------------------------------------------
+
+        private void OnNewProjectile(object sender, GetDataHandlers.NewProjectileEventArgs args)
+        {
+            if (!_config.Enabled || !_config.BlockTombstones || args.Handled)
+                return;
+
+            if (!TombstoneProjectiles.Contains(args.Type))
+                return;
+
+            if (!IsBossNear(args.Position.X, args.Position.Y, _config.BossAreaRadiusTiles))
+                return;
+
+            args.Player.RemoveProjectile(args.Identity, args.Owner);
+            args.Handled = true;
+        }
+
+        private static bool IsBossNear(float x, float y, int radiusTiles)
+        {
+            float radiusPx = radiusTiles * 16f;
+            float radiusSq = radiusPx * radiusPx;
+
+            for (int i = 0; i < Main.maxNPCs; i++)
+            {
+                NPC boss = Main.npc[i];
+                if (boss == null || !boss.active || !boss.boss)
+                    continue;
+
+                float dx = boss.Center.X - x;
+                float dy = boss.Center.Y - y;
+                if (dx * dx + dy * dy <= radiusSq)
+                    return true;
+            }
+            return false;
         }
     }
 
-    private void OnNpcSpawn(NpcSpawnEventArgs args)
+    public class BossFocusConfig
     {
-        if (!_pluginEnabled) return;
+        public bool Enabled { get; set; } = true;
+        public bool BlockMonsterSpawns { get; set; } = true;
+        public bool BlockTombstones { get; set; } = true;
 
-        var npc = Main.npc[args.NpcId];
-        if (npc == null || !npc.active) return;
+        /// <summary>Radius (dalam tile) dari boss yang dianggap "area boss fight".</summary>
+        public int BossAreaRadiusTiles { get; set; } = 100;
 
-        // Abaikan Boss, NPC Kota, Hewan, dan Minion Boss
-        if (npc.boss || npc.townNPC || npc.friendly || npc.realLife != -1) return;
-
-        foreach (var boss in Main.npc)
-        {
-            if (!boss.active || !boss.boss) continue;
-
-            if (Vector2.DistanceSquared(boss.Center, npc.Center) <= BossProtectionRadius * BossProtectionRadius)
-            {
-                args.Handled = true; 
-                npc.active = false;
-                npc.type = 0;
-                break;
-            }
-        }
+        /// <summary>Spawn dalam radius ini dari boss dianggap minion boss, jadi tetap diizinkan.</summary>
+        public int BossMinionRadiusTiles { get; set; } = 12;
     }
 }
