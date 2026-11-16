@@ -1,5 +1,8 @@
 using System;
+using System.Linq;
+using Microsoft.Xna.Framework;
 using Terraria;
+using Terraria.ID;
 using TerrariaApi.Server;
 using TShockAPI;
 
@@ -10,8 +13,11 @@ public class DNDBossFightPlugin : TerrariaPlugin
 {
     public override string Name => "DNDBossFight";
     public override string Author => "Brok";
-    public override Version Version => new(1, 0, 4); // Versi baru
-    public override string Description => "Menonaktifkan penjatuhan tombstone saat pemain mati ketika ada boss yang aktif.";
+    public override Version Version => new(1, 0, 1); // Versi dinaikkan
+    public override string Description => "Mencegah spawn monster di sekitar boss dan menonaktifkan tombstone saat melawan boss.";
+
+    // Radius (dalam tiles) di sekitar boss yang tidak boleh ada monster spawn
+    private const float BossProtectionRadius = 120f;
 
     private bool _originalDisableTombstones;
     private bool _pluginEnabled = true;
@@ -21,13 +27,11 @@ public class DNDBossFightPlugin : TerrariaPlugin
 
     public override void Initialize()
     {
-        // Simpan nilai awal config tombstone
         _originalDisableTombstones = TShock.Config.Settings.DisableTombstones;
 
-        // Hook untuk update setiap tick (memantau boss & mengatur tombstone)
         ServerApi.Hooks.GameUpdate.Register(this, OnGameUpdate);
+        ServerApi.Hooks.NpcSpawn.Register(this, OnNpcSpawn);
 
-        // Command untuk toggle plugin
         Commands.ChatCommands.Add(new Command("dndboss.admin", TogglePlugin, "dndboss"));
     }
 
@@ -36,9 +40,9 @@ public class DNDBossFightPlugin : TerrariaPlugin
         if (disposing)
         {
             ServerApi.Hooks.GameUpdate.Deregister(this, OnGameUpdate);
+            ServerApi.Hooks.NpcSpawn.Deregister(this, OnNpcSpawn);
             Commands.ChatCommands.RemoveAll(c => c.CommandDelegate == TogglePlugin);
 
-            // Kembalikan config tombstone ke nilai asli saat plugin dimatikan
             TShock.Config.Settings.DisableTombstones = _originalDisableTombstones;
         }
         base.Dispose(disposing);
@@ -49,7 +53,6 @@ public class DNDBossFightPlugin : TerrariaPlugin
         _pluginEnabled = !_pluginEnabled;
         args.Player.SendSuccessMessage($"[DNDBossFight] Plugin {(_pluginEnabled ? "diaktifkan" : "dinonaktifkan")}.");
 
-        // Jika dinonaktifkan, kembalikan pengaturan tombstone
         if (!_pluginEnabled && _bossWasActive)
         {
             TShock.Config.Settings.DisableTombstones = _originalDisableTombstones;
@@ -75,16 +78,13 @@ public class DNDBossFightPlugin : TerrariaPlugin
         // Kelola pengaturan tombstone berdasarkan status boss
         if (bossActive && !_bossWasActive)
         {
-            // Boss baru muncul -> nonaktifkan tombstone
             _originalDisableTombstones = TShock.Config.Settings.DisableTombstones;
             TShock.Config.Settings.DisableTombstones = true;
             _bossWasActive = true;
         }
         else if (!bossActive && _bossWasActive)
         {
-            // Boss sudah mati -> kembalikan pengaturan tombstone
             TShock.Config.Settings.DisableTombstones = _originalDisableTombstones;
             _bossWasActive = false;
         }
     }
-}
