@@ -132,7 +132,7 @@ namespace MagicBuilder
 
             ["desert"] = new HouseStyle(
                 "Desert",
-                TileID.SmoothSandstone, TileID.SandstoneBrick, TileID.RedSandstoneBrick,
+                TileID.SmoothSandstone, TileID.SandstoneBrick, TileID.HardenedSand,
                 WallID.SmoothSandstone, WallID.SandstoneBrick,
                 door: 4, table: 30, chair: 6, bookcase: 32,
                 platform: 42, lantern: 36, torch: 16,
