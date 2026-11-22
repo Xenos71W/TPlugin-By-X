@@ -1,31 +1,38 @@
-name: Build TShock Plugin
+name: Build
 
 on:
   push:
     branches: [ main, master ]
+  pull_request:
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [ MagicBuilder ]
+
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup .NET 9
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '9.0.x'
+          dotnet-version: 9.0.x
 
-      - name: Restore dependencies
-        run: dotnet restore PotionShop.csproj
+      - name: Restore
+        run: dotnet restore ${{ matrix.project }}/${{ matrix.project }}.csproj
 
-      - name: Build & Rename DLL
-        run: dotnet build PotionShop.csproj -c Release --no-restore
+      - name: Build
+        run: dotnet build ${{ matrix.project }}/${{ matrix.project }}.csproj -c Release --no-restore
 
-      - name: Upload Single DLL
+      - name: Upload plugin DLL
         uses: actions/upload-artifact@v4
         with:
-          name: PotionShop-Plugin
-          path: bin/Release/net9.0/PotionShop.dll
+          name: ${{ matrix.project }}
+          path: ${{ matrix.project }}/bin/Release/net9.0/${{ matrix.project }}.dll
+          if-no-files-found: error
