@@ -9,32 +9,43 @@ using TShockAPI;
 namespace MagicBuilder
 {
     /// <summary>
-    /// TAHAP 1.2: pilih titik pakai Ice Rod + penanda blok palsu (hanya terlihat oleh pemain itu).
-    /// Belum ada fitur bangun.
+    /// TAHAP 2: pilih titik pakai Ice Rod + /build hellevator.
     ///
-    /// Dari log Ice Rod: packet ProjectileNew (msg 27) bertipe 80 (Ice Block) membawa tile target
-    /// kursor di ai[0] = X dan ai[1] = Y. Jadi titik bisa dibaca walau tile yang diklik terisi.
-    /// Packet Tile "PlaceTile" tipe 127 (es-nya sendiri) hanya dibatalkan supaya tidak ada es.
-    ///
-    /// Layout msg 27 yang dipakai (dari log): 4 byte header, posisi (2 float), kecepatan (2 float),
-    /// lalu type (short) di offset 20, flags di offset 22, ai[0] di 23, ai[1] di 27.
+    /// Titik: tile target Ice Rod dibaca dari ai[0]/ai[1] packet projectile (msg 27, tipe 80).
+    /// Hellevator: dari titik 1 turun sampai lapisan underworld.
+    ///   - lubang 3 tile (x-1 .. x+1), dindingnya Gray Brick Wall
+    ///   - 1 tile gray brick di tiap sisi (x-2 dan x+2)
+    ///   - obor bergantian kiri/kanan tiap beberapa tile
+    /// Dibangun bertahap per tick (GameUpdate) supaya server tidak lag.
+    /// BELUM ADA UNDO. Backup dunia sebelum dipakai.
     /// </summary>
     [ApiVersion(2, 1)]
     public class MagicBuilderPlugin : TerrariaPlugin
     {
         public override string Name => "MagicBuilder";
         public override string Author => "You";
-        public override string Description => "Pilih titik pakai Ice Rod untuk fitur bangun otomatis.";
-        public override Version Version => new Version(0, 3, 0, 0);
+        public override string Description => "Pilih titik pakai Ice Rod dan bangun struktur otomatis.";
+        public override Version Version => new Version(0, 4, 0, 0);
 
         private const string UsePermission = "magicbuilder.use";
+        private const string BuildPermission = "magicbuilder.build";
         private const string DebugPermission = "magicbuilder.debug";
 
+        // --- Pemilih titik ---
         private const int IceRodItemType = 496;      // Ice Rod
         private const int IceBlockProjectile = 80;   // projectile Ice Rod
         private const int IceBlockTileType = 127;    // tile yang dibuat Ice Rod
-        private const ushort MarkerTileType = 8;     // Gold Ore, dipakai sebagai blok penanda palsu
+        private const ushort MarkerTileType = 8;     // Gold Ore, blok penanda palsu
         private const int MaxPoints = 8;
+
+        // --- Hellevator ---
+        private const ushort BrickTileType = 38;     // Gray Brick
+        private const ushort WallType = 5;           // Gray Brick Wall (wall aman, tidak memunculkan musuh)
+        private const int TorchTileType = 4;         // Torch
+        private const int TorchStyle = 0;            // Torch biasa
+        private const int TorchInterval = 6;         // jarak antar obor (tile)
+        private const int RowsPerTick = 8;           // baris yang dikerjakan per tick
+        private const int ConfirmSeconds = 60;
 
         // Packet yang direkam oleh /build debug: Tile, ProjectileNew, ProjectileDestroy
         private static readonly HashSet<int> DebugPackets = new HashSet<int> { 17, 27, 29 };
@@ -43,9 +54,29 @@ namespace MagicBuilder
         {
             public bool Selecting;
             public readonly List<(int X, int Y)> Points = new List<(int X, int Y)>();
+
+            public bool HasPending;
+            public int PendingX;
+            public int PendingStartY;
+            public int PendingEndY;
+            public DateTime PendingExpires;
+        }
+
+        private class BuildJob
+        {
+            public int PlayerIndex;
+            public string PlayerName;
+            public int X;
+            public int StartY;
+            public int EndY;
+            public int NextY;
+            public int Blocked;
+            public int TorchFailed;
+            public bool Cancelled;
         }
 
         private readonly Dictionary<int, Session> _sessions = new Dictionary<int, Session>();
+        private readonly Queue<BuildJob> _jobs = new Queue<BuildJob>();
         private readonly HashSet<int> _debug = new HashSet<int>();
         private readonly object _lock = new object();
         private string _logPath;
@@ -59,6 +90,7 @@ namespace MagicBuilder
             GetDataHandlers.TileEdit += OnTileEdit;
             ServerApi.Hooks.NetGetData.Register(this, OnGetData);
             ServerApi.Hooks.ServerLeave.Register(this, OnLeave);
+            ServerApi.Hooks.GameUpdate.Register(this, OnGameUpdate);
 
             Commands.ChatCommands.Add(new Command(UsePermission, BuildCommand, "build"));
         }
@@ -70,13 +102,14 @@ namespace MagicBuilder
                 GetDataHandlers.TileEdit -= OnTileEdit;
                 ServerApi.Hooks.NetGetData.Deregister(this, OnGetData);
                 ServerApi.Hooks.ServerLeave.Deregister(this, OnLeave);
+                ServerApi.Hooks.GameUpdate.Deregister(this, OnGameUpdate);
                 Commands.ChatCommands.RemoveAll(c => c.CommandDelegate == BuildCommand);
             }
             base.Dispose(disposing);
         }
 
         // ---------------------------------------------------------------
-        // Command: /build select | points | remove <n> | clear | test | debug
+        // Command
         // ---------------------------------------------------------------
 
         private void BuildCommand(CommandArgs args)
@@ -171,11 +204,22 @@ namespace MagicBuilder
 
                 case "test":
                 {
-                    // Taruh satu titik 2 tile di kanan pemain, untuk mengecek blok penanda terlihat atau tidak
                     string msg = AddPoint(player, player.TileX + 2, player.TileY);
                     player.SendInfoMessage(msg ?? "Titik itu sudah ada.");
                     break;
                 }
+
+                case "hellevator":
+                    PrepareHellevator(player);
+                    break;
+
+                case "confirm":
+                    ConfirmBuild(player);
+                    break;
+
+                case "cancel":
+                    CancelBuild(player);
+                    break;
 
                 case "debug":
                 {
@@ -198,7 +242,7 @@ namespace MagicBuilder
                 }
 
                 default:
-                    player.SendInfoMessage("Pemakaian: /build select | points | remove <n> | clear | test");
+                    player.SendInfoMessage("Pemakaian: /build select | points | remove <n> | clear | hellevator | confirm | cancel");
                     break;
             }
         }
@@ -222,6 +266,296 @@ namespace MagicBuilder
                 _sessions.Remove(args.Who);
                 _debug.Remove(args.Who);
             }
+        }
+
+        // ---------------------------------------------------------------
+        // Hellevator: persiapan, konfirmasi, eksekusi bertahap
+        // ---------------------------------------------------------------
+
+        private void PrepareHellevator(TSPlayer player)
+        {
+            if (!player.HasPermission(BuildPermission))
+            {
+                player.SendErrorMessage("Kamu tidak punya permission " + BuildPermission);
+                return;
+            }
+
+            (int X, int Y) point;
+            lock (_lock)
+            {
+                Session s = GetSession(player.Index);
+                if (s.Points.Count == 0)
+                {
+                    player.SendErrorMessage("Belum ada titik. Pakai /build select lalu klik titik awal dengan Ice Rod.");
+                    return;
+                }
+                point = s.Points[0];
+
+                foreach (BuildJob j in _jobs)
+                {
+                    if (j.PlayerIndex == player.Index && !j.Cancelled)
+                    {
+                        player.SendErrorMessage("Kamu masih punya pembangunan yang berjalan. Tunggu selesai atau /build cancel.");
+                        return;
+                    }
+                }
+            }
+
+            int cx = point.X;
+            int sy = point.Y;
+            int ey = Main.UnderworldLayer;
+
+            if (cx - 2 < 0 || cx + 2 >= Main.maxTilesX || sy < 0)
+            {
+                player.SendErrorMessage("Titik terlalu dekat tepi dunia.");
+                return;
+            }
+            if (sy >= ey || ey >= Main.maxTilesY - 5)
+            {
+                player.SendErrorMessage($"Titik harus berada di atas underworld (y < {ey}). Titik kamu: y = {sy}.");
+                return;
+            }
+
+            // Cek izin build (region/spawn protection) di seluruh area
+            for (int y = sy; y <= ey; y++)
+            {
+                for (int x = cx - 2; x <= cx + 2; x++)
+                {
+                    if (!player.HasBuildPermission(x, y, false))
+                    {
+                        player.SendErrorMessage($"Kamu tidak boleh membangun di ({x}, {y}) (region/spawn protection). Pembangunan dibatalkan.");
+                        return;
+                    }
+                }
+            }
+
+            lock (_lock)
+            {
+                Session s = GetSession(player.Index);
+                s.HasPending = true;
+                s.PendingX = cx;
+                s.PendingStartY = sy;
+                s.PendingEndY = ey;
+                s.PendingExpires = DateTime.UtcNow.AddSeconds(ConfirmSeconds);
+            }
+
+            player.SendInfoMessage($"Hellevator: dari ({cx}, {sy}) turun sampai y = {ey} ({ey - sy + 1} tile), lebar total 5 (lubang 3 + brick 1 di tiap sisi).");
+            player.SendWarningMessage($"Ini mengubah dunia dan BELUM ADA UNDO. Backup dunia dulu. Ketik /build confirm dalam {ConfirmSeconds} detik untuk mulai.");
+        }
+
+        private void ConfirmBuild(TSPlayer player)
+        {
+            if (!player.HasPermission(BuildPermission))
+            {
+                player.SendErrorMessage("Kamu tidak punya permission " + BuildPermission);
+                return;
+            }
+
+            List<(int X, int Y)> oldPoints = null;
+            BuildJob job = null;
+
+            lock (_lock)
+            {
+                Session s = GetSession(player.Index);
+                if (!s.HasPending || DateTime.UtcNow > s.PendingExpires)
+                {
+                    s.HasPending = false;
+                    player.SendErrorMessage("Tidak ada pembangunan yang menunggu konfirmasi. Mulai lagi dengan /build hellevator.");
+                    return;
+                }
+
+                job = new BuildJob
+                {
+                    PlayerIndex = player.Index,
+                    PlayerName = player.Name,
+                    X = s.PendingX,
+                    StartY = s.PendingStartY,
+                    EndY = s.PendingEndY,
+                    NextY = s.PendingStartY
+                };
+                _jobs.Enqueue(job);
+
+                s.HasPending = false;
+                oldPoints = new List<(int X, int Y)>(s.Points);
+                s.Points.Clear();
+            }
+
+            foreach (var p in oldPoints)
+                player.SendTileRect((short)p.X, (short)p.Y, 1, 1);
+
+            player.SendSuccessMessage("Pembangunan hellevator dimulai. Pakai /build cancel untuk menghentikan.");
+        }
+
+        private void CancelBuild(TSPlayer player)
+        {
+            int count = 0;
+            lock (_lock)
+            {
+                Session s = GetSession(player.Index);
+                if (s.HasPending)
+                {
+                    s.HasPending = false;
+                    count++;
+                }
+                foreach (BuildJob j in _jobs)
+                {
+                    if (j.PlayerIndex == player.Index && !j.Cancelled)
+                    {
+                        j.Cancelled = true;
+                        count++;
+                    }
+                }
+            }
+
+            if (count == 0)
+                player.SendInfoMessage("Tidak ada pembangunan untuk dibatalkan.");
+            else
+                player.SendSuccessMessage("Dibatalkan. Bagian yang sudah dibangun tidak dikembalikan.");
+        }
+
+        private void OnGameUpdate(EventArgs args)
+        {
+            BuildJob job;
+            lock (_lock)
+            {
+                if (_jobs.Count == 0)
+                    return;
+                job = _jobs.Peek();
+            }
+
+            bool finished = false;
+            string error = null;
+
+            try
+            {
+                if (job.Cancelled)
+                {
+                    finished = true;
+                }
+                else
+                {
+                    int y0 = job.NextY;
+                    int rows = 0;
+
+                    while (rows < RowsPerTick && job.NextY <= job.EndY)
+                    {
+                        BuildRow(job, job.NextY);
+                        job.NextY++;
+                        rows++;
+                    }
+
+                    if (rows > 0)
+                        TSPlayer.All.SendTileRect((short)(job.X - 2), (short)y0, 5, (byte)rows);
+
+                    if (job.NextY > job.EndY)
+                        finished = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                finished = true;
+                TShock.Log.ConsoleError($"[MagicBuilder] Error saat membangun: {ex}");
+            }
+
+            if (!finished)
+                return;
+
+            lock (_lock) { _jobs.Dequeue(); }
+
+            TSPlayer owner = TShock.Players[job.PlayerIndex];
+            bool ownerHere = owner != null && owner.Active && owner.Name == job.PlayerName;
+
+            if (ownerHere)
+            {
+                if (error != null)
+                    owner.SendErrorMessage("Pembangunan berhenti karena error: " + error);
+                else if (job.Cancelled)
+                    owner.SendInfoMessage("Pembangunan dihentikan.");
+                else
+                {
+                    owner.SendSuccessMessage("Hellevator selesai.");
+                    if (job.Blocked > 0)
+                        owner.SendWarningMessage($"{job.Blocked} tile tidak bisa dihancurkan (misalnya peti berisi), jadi ada celah.");
+                    if (job.TorchFailed > 0)
+                        owner.SendWarningMessage($"{job.TorchFailed} obor gagal dipasang.");
+                }
+            }
+
+            TShock.Log.ConsoleInfo($"[MagicBuilder] Hellevator {job.PlayerName} x={job.X} y={job.StartY}..{job.EndY} selesai (blocked={job.Blocked}, torchFailed={job.TorchFailed}, cancelled={job.Cancelled}, error={error ?? "-"})");
+        }
+
+        /// <summary>Kerjakan satu baris hellevator: brick kiri/kanan, gali lubang, pasang dinding, obor.</summary>
+        private void BuildRow(BuildJob job, int y)
+        {
+            int cx = job.X;
+
+            // 1) kolom brick di kedua sisi
+            PlaceBrick(job, cx - 2, y);
+            PlaceBrick(job, cx + 2, y);
+
+            // 2) lubang 3 tile: gali + dinding
+            for (int x = cx - 1; x <= cx + 1; x++)
+                DigAndWall(job, x, y);
+
+            // 3) obor bergantian kiri/kanan
+            int offset = y - job.StartY;
+            if (offset % TorchInterval == 0)
+            {
+                int k = offset / TorchInterval;
+                int tx = (k % 2 == 0) ? cx - 1 : cx + 1;
+
+                if (WorldGen.PlaceTile(tx, y, TorchTileType, true, true, -1, TorchStyle))
+                    WorldGen.SquareTileFrame(tx, y, true);
+                else
+                    job.TorchFailed++;
+            }
+        }
+
+        private void PlaceBrick(BuildJob job, int x, int y)
+        {
+            var tile = Main.tile[x, y];
+
+            if (tile.active() && tile.type == BrickTileType)
+                return;
+
+            if (tile.active())
+            {
+                WorldGen.KillTile(x, y, false, false, true);
+                tile = Main.tile[x, y];
+                if (tile.active())
+                {
+                    job.Blocked++;
+                    return;
+                }
+            }
+
+            tile.liquid = 0;
+            tile.type = BrickTileType;
+            tile.active(true);
+            tile.halfBrick(false);
+            tile.slope(0);
+            WorldGen.SquareTileFrame(x, y, true);
+        }
+
+        private void DigAndWall(BuildJob job, int x, int y)
+        {
+            var tile = Main.tile[x, y];
+
+            if (tile.active())
+            {
+                WorldGen.KillTile(x, y, false, false, true);
+                tile = Main.tile[x, y];
+                if (tile.active())
+                {
+                    job.Blocked++;
+                    return;
+                }
+            }
+
+            tile.liquid = 0;
+            tile.wall = WallType;
+            WorldGen.SquareWallFrame(x, y, true);
         }
 
         // ---------------------------------------------------------------
