@@ -9,13 +9,15 @@ using TShockAPI;
 namespace MagicBuilder
 {
     /// <summary>
-    /// TAHAP 1.1: pilih titik pakai Ice Rod + penanda blok palsu (hanya terlihat oleh pemain itu).
+    /// TAHAP 1.2: pilih titik pakai Ice Rod + penanda blok palsu (hanya terlihat oleh pemain itu).
     /// Belum ada fitur bangun.
     ///
-    /// Deteksi klik (BELUM TERVERIFIKASI, perlu dites): saat memegang Ice Rod dan mode pilih aktif,
-    /// packet Tile "PlaceTile" bertipe 127 (Ice Block ajaib) dianggap sebagai klik di tile itu,
-    /// lalu dibatalkan supaya dunia tidak berubah. Pakai /build debug untuk merekam packet mentah
-    /// kalau deteksinya meleset.
+    /// Dari log Ice Rod: packet ProjectileNew (msg 27) bertipe 80 (Ice Block) membawa tile target
+    /// kursor di ai[0] = X dan ai[1] = Y. Jadi titik bisa dibaca walau tile yang diklik terisi.
+    /// Packet Tile "PlaceTile" tipe 127 (es-nya sendiri) hanya dibatalkan supaya tidak ada es.
+    ///
+    /// Layout msg 27 yang dipakai (dari log): 4 byte header, posisi (2 float), kecepatan (2 float),
+    /// lalu type (short) di offset 20, flags di offset 22, ai[0] di 23, ai[1] di 27.
     /// </summary>
     [ApiVersion(2, 1)]
     public class MagicBuilderPlugin : TerrariaPlugin
@@ -23,12 +25,13 @@ namespace MagicBuilder
         public override string Name => "MagicBuilder";
         public override string Author => "You";
         public override string Description => "Pilih titik pakai Ice Rod untuk fitur bangun otomatis.";
-        public override Version Version => new Version(0, 2, 0, 0);
+        public override Version Version => new Version(0, 3, 0, 0);
 
         private const string UsePermission = "magicbuilder.use";
         private const string DebugPermission = "magicbuilder.debug";
 
         private const int IceRodItemType = 496;      // Ice Rod
+        private const int IceBlockProjectile = 80;   // projectile Ice Rod
         private const int IceBlockTileType = 127;    // tile yang dibuat Ice Rod
         private const ushort MarkerTileType = 8;     // Gold Ore, dipakai sebagai blok penanda palsu
         private const int MaxPoints = 8;
@@ -99,7 +102,7 @@ namespace MagicBuilder
                         now = s.Selecting;
                     }
                     if (now)
-                        player.SendSuccessMessage("Mode pilih titik ON. Pegang Ice Rod lalu klik tile KOSONG (udara) untuk menandai titik.");
+                        player.SendSuccessMessage("Mode pilih titik ON. Pegang Ice Rod lalu klik tile untuk menandai titik.");
                     else
                         player.SendInfoMessage("Mode pilih titik OFF. Ice Rod kembali normal.");
                     break;
@@ -169,10 +172,8 @@ namespace MagicBuilder
                 case "test":
                 {
                     // Taruh satu titik 2 tile di kanan pemain, untuk mengecek blok penanda terlihat atau tidak
-                    int tx = player.TileX + 2;
-                    int ty = player.TileY;
-                    string msg = AddPoint(player, tx, ty);
-                    player.SendInfoMessage(msg);
+                    string msg = AddPoint(player, player.TileX + 2, player.TileY);
+                    player.SendInfoMessage(msg ?? "Titik itu sudah ada.");
                     break;
                 }
 
@@ -224,7 +225,96 @@ namespace MagicBuilder
         }
 
         // ---------------------------------------------------------------
-        // Tangkap klik Ice Rod
+        // Titik: baca dari packet projectile Ice Rod
+        // ---------------------------------------------------------------
+
+        private void OnGetData(GetDataEventArgs args)
+        {
+            int who = args.Msg.whoAmI;
+            if (who < 0 || who >= Main.maxPlayers)
+                return;
+
+            int msgId = (int)args.MsgID;
+
+            bool debug;
+            bool selecting;
+            lock (_lock)
+            {
+                debug = _debug.Contains(who);
+                Session s;
+                selecting = _sessions.TryGetValue(who, out s) && s.Selecting;
+            }
+
+            bool wantDebug = debug && DebugPackets.Contains(msgId);
+            bool wantSelect = selecting && msgId == 27;
+            if (!wantDebug && !wantSelect)
+                return;
+
+            byte[] buffer = args.Msg.readBuffer;
+            if (buffer == null || args.Index < 0 || args.Index >= buffer.Length)
+                return;
+
+            Player p = Main.player[who];
+            if (p == null || p.selectedItem < 0 || p.selectedItem >= p.inventory.Length)
+                return;
+
+            Item held = p.inventory[p.selectedItem];
+            if (held.type != IceRodItemType)
+                return;
+
+            if (wantDebug)
+            {
+                int len = Math.Min(args.Length, 64);
+                var hex = new StringBuilder();
+                for (int i = 0; i < len && args.Index + i < buffer.Length; i++)
+                {
+                    hex.Append(buffer[args.Index + i].ToString("X2"));
+                    hex.Append(' ');
+                }
+                Write($"{DateTime.Now:HH:mm:ss.fff} | msg={msgId} ({args.MsgID}) | len={args.Length} | held={held.type} \"{held.Name}\" | {hex}");
+            }
+
+            if (wantSelect)
+                TryHandleIceProjectile(args, who, buffer);
+        }
+
+        private void TryHandleIceProjectile(GetDataEventArgs args, int who, byte[] buffer)
+        {
+            int i = args.Index;
+
+            // header(4) + pos(8) + vel(8) + type(2) + flags(1) + ai0(4) + ai1(4) = 31 byte
+            if (args.Length < 31 || i + 31 > buffer.Length)
+                return;
+
+            short type = BitConverter.ToInt16(buffer, i + 20);
+            if (type != IceBlockProjectile)
+                return;
+
+            byte flags = buffer[i + 22];
+            if ((flags & 0x03) != 0x03)   // bit0 = ai[0] ada, bit1 = ai[1] ada
+                return;
+
+            float ai0 = BitConverter.ToSingle(buffer, i + 23);
+            float ai1 = BitConverter.ToSingle(buffer, i + 27);
+            if (float.IsNaN(ai0) || float.IsNaN(ai1) || ai0 < 0f || ai1 < 0f)
+                return; // paket "sudah dipasang" membawa ai[0] = -1, abaikan
+
+            int x = (int)ai0;
+            int y = (int)ai1;
+            if (x >= Main.maxTilesX || y >= Main.maxTilesY)
+                return;
+
+            TSPlayer player = TShock.Players[who];
+            if (player == null || !player.RealPlayer)
+                return;
+
+            string message = AddPoint(player, x, y);
+            if (message != null)
+                player.SendInfoMessage(message);
+        }
+
+        // ---------------------------------------------------------------
+        // Batalkan es dari Ice Rod
         // ---------------------------------------------------------------
 
         private void OnTileEdit(object sender, GetDataHandlers.TileEditEventArgs args)
@@ -245,7 +335,6 @@ namespace MagicBuilder
             if (!selecting || !IsHoldingIceRod(player))
                 return;
 
-            // Hanya packet "PlaceTile" (action 1) bertipe Ice Block ajaib
             if ((int)args.Action != 1 || args.EditData != IceBlockTileType)
                 return;
 
@@ -254,14 +343,25 @@ namespace MagicBuilder
             if (x < 0 || y < 0 || x >= Main.maxTilesX || y >= Main.maxTilesY)
                 return;
 
-            // Batalkan perubahan dunia
             args.Handled = true;
 
-            string message = AddPoint(player, x, y);
-            player.SendInfoMessage(message);
+            // kirim kondisi asli tile (membatalkan es di client), lalu pasang lagi penanda kalau tile ini titik terpilih
+            player.SendTileRect((short)x, (short)y, 1, 1);
+
+            bool marked;
+            lock (_lock)
+            {
+                Session s;
+                marked = _sessions.TryGetValue(player.Index, out s) && s.Points.Exists(pt => pt.X == x && pt.Y == y);
+            }
+            if (marked)
+                ShowMarker(player, x, y);
         }
 
-        /// <summary>Tambah titik (atau tolak jika penuh/duplikat), lalu sinkronkan tampilan tile.</summary>
+        /// <summary>
+        /// Tambah titik. Mengembalikan pesan untuk pemain, atau null jika titik duplikat
+        /// (autofire Ice Rod sering mengirim titik yang sama berkali-kali).
+        /// </summary>
         private string AddPoint(TSPlayer player, int x, int y)
         {
             string message;
@@ -271,9 +371,9 @@ namespace MagicBuilder
             {
                 Session s = GetSession(player.Index);
 
-                if (s.Points.Exists(p => p.X == x && p.Y == y))
+                if (s.Points.Exists(pt => pt.X == x && pt.Y == y))
                 {
-                    message = $"Titik ({x}, {y}) sudah ada.";
+                    return null;
                 }
                 else if (s.Points.Count >= MaxPoints)
                 {
@@ -287,8 +387,6 @@ namespace MagicBuilder
                 }
             }
 
-            // kirim kondisi asli tile (membatalkan es palsu di sisi client), lalu pasang penanda
-            player.SendTileRect((short)x, (short)y, 1, 1);
             if (added)
                 ShowMarker(player, x, y);
 
@@ -328,49 +426,6 @@ namespace MagicBuilder
             {
                 TShock.Log.ConsoleError($"[MagicBuilder] Gagal pasang penanda: {ex.Message}");
             }
-        }
-
-        // ---------------------------------------------------------------
-        // Debug: rekam packet mentah saat memegang Ice Rod
-        // ---------------------------------------------------------------
-
-        private void OnGetData(GetDataEventArgs args)
-        {
-            int who = args.Msg.whoAmI;
-            if (who < 0 || who >= Main.maxPlayers)
-                return;
-
-            lock (_lock)
-            {
-                if (!_debug.Contains(who))
-                    return;
-            }
-
-            int msgId = (int)args.MsgID;
-            if (!DebugPackets.Contains(msgId))
-                return;
-
-            byte[] buffer = args.Msg.readBuffer;
-            if (buffer == null || args.Index < 0 || args.Index >= buffer.Length)
-                return;
-
-            Player p = Main.player[who];
-            if (p == null || p.selectedItem < 0 || p.selectedItem >= p.inventory.Length)
-                return;
-
-            Item held = p.inventory[p.selectedItem];
-            if (held.type != IceRodItemType)
-                return;
-
-            int len = Math.Min(args.Length, 64);
-            var hex = new StringBuilder();
-            for (int i = 0; i < len && args.Index + i < buffer.Length; i++)
-            {
-                hex.Append(buffer[args.Index + i].ToString("X2"));
-                hex.Append(' ');
-            }
-
-            Write($"{DateTime.Now:HH:mm:ss.fff} | msg={msgId} ({args.MsgID}) | len={args.Length} | held={held.type} \"{held.Name}\" | {hex}");
         }
 
         private void Write(string line)
