@@ -10,11 +10,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    strategy:
-      fail-fast: false
-      matrix:
-        project: [ MagicBuilder ]
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,15 +19,22 @@ jobs:
         with:
           dotnet-version: 9.0.x
 
-      - name: Restore
-        run: dotnet restore ${{ matrix.project }}/${{ matrix.project }}.csproj
+      - name: List project files
+        run: find . -name '*.csproj' -not -path './.git/*'
 
-      - name: Build
-        run: dotnet build ${{ matrix.project }}/${{ matrix.project }}.csproj -c Release --no-restore
+      - name: Build all plugins
+        run: |
+          set -e
+          find . -name '*.csproj' -not -path './.git/*' | while read -r proj; do
+            echo "=== Building $proj ==="
+            dotnet build "$proj" -c Release
+          done
 
-      - name: Upload plugin DLL
+      - name: Upload plugin DLLs
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.project }}
-          path: ${{ matrix.project }}/bin/Release/net9.0/${{ matrix.project }}.dll
+          name: plugins
+          path: |
+            **/bin/Release/net9.0/BossFocus.dll
+            **/bin/Release/net9.0/MagicBuilder.dll
           if-no-files-found: error
