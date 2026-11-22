@@ -14,8 +14,8 @@ namespace MagicBuilder
     {
         public override string Name => "MagicBuilder";
         public override string Author => "You";
+        public override Version Version => new Version(0, 8, 0, 0);
         public override string Description => "Pilih titik pakai Ice Rod dan bangun struktur otomatis.";
-        public override Version Version => new Version(0, 7, 0, 0);
 
         private const string UsePermission = "magicbuilder.use";
         private const string BuildPermission = "magicbuilder.build";
@@ -60,11 +60,11 @@ namespace MagicBuilder
         private class HouseStyle
         {
             public string Name;
-            public ushort MainBlock;    // Blok utama tembok/lantai atas
-            public ushort BaseBlock;    // Blok kombinasi (fondasi, pilar sudut, trim atap)
+            public ushort MainBlock;    // Blok utama tembok & lantai
+            public ushort BaseBlock;    // Blok fondasi, bingkai sudut & trim
             public ushort RoofBlock;    // Blok atap miring
-            public ushort MainWall;     // Dinding utama ruangan
-            public ushort AccentWall;   // Dinding aksen/wainscoting bagian bawah & pilar
+            public ushort MainWall;     // Dinding utama interior
+            public ushort AccentWall;   // Dinding aksen bawah (wainscoting) & pilar jendela
             public int Door;
             public int Table;
             public int Chair;
@@ -73,7 +73,6 @@ namespace MagicBuilder
             public int Lantern;
             public int Torch;
             public int Painting3x2;
-            public int Painting2x3;
 
             public HouseStyle(
                 string name,
@@ -81,7 +80,7 @@ namespace MagicBuilder
                 ushort mainWall, ushort accentWall,
                 int door, int table, int chair, int bookcase,
                 int platform, int lantern, int torch,
-                int painting3x2, int painting2x3)
+                int painting3x2)
             {
                 Name = name;
                 MainBlock = mainBlock;
@@ -97,7 +96,6 @@ namespace MagicBuilder
                 Lantern = lantern;
                 Torch = torch;
                 Painting3x2 = painting3x2;
-                Painting2x3 = painting2x3;
             }
         }
 
@@ -109,82 +107,91 @@ namespace MagicBuilder
             public HouseStyle Style;
         }
 
-        // Semua ID style sudah dicocokkan dengan sprite sheet Terraria 1.4.4+
-        // Bookcase (Tile 101): 0=Wood, 1=BlueDungeon, 2=GreenDungeon, 3=PinkDungeon, 4=Obsidian, 5=Glass, 6=Golden, 7=Honey, 8=Steampunk, 9=Pumpkin, 10=Spooky, 11=Pine, 12=Frozen, 13=Dynasty, 14=LivingWood, 15=Shadewood, 16=Boreal, 17=Slime, 18=Bone, 19=Cactus, 20=Flesh, 21=Mushroom, 22=Skyware, 23=Lihzahrd, 24=Martian, 25=Granite, 26=Marble, 27=Crystal, 28=Meteorite, 29=RichMahogany, 30=Ebonwood, 31=Pearlwood, 32=Sandstone
-        // Painting3X2 (Tile 242) & Painting2X3 (Tile 245): semua style 0..15 adalah lukisan murni (bukan trophy)
+        // Semua ID diverifikasi terhadap sprite sheet resmi Terraria 1.4.4+
+        // Bookcases (Tile 101): 0=Wood, 4=Obsidian, 5=Glass, 6=Golden, 8=Steampunk, 12=Frozen, 13=Dynasty, 14=LivingWood, 15=Shadewood, 16=Boreal, 25=Granite, 26=Marble, 27=Crystal
+        // HangingLanterns (Tile 42): 1=Brass, 3=Carriage, 11=Chinese, 12=Glass, 13=Frozen, 14=Obsidian, 17=Ebonwood, 18=RichMahogany, 19=Pearlwood, 20=Shadewood, 25=PalmWood, 26=Boreal
+        // Painting3X2 (Tile 242): 11=FindingGold, 13=GoodMorning, 15=ThroughTheWindow, 16=AboveClouds, 17=JungleGrass, 18=ColdWaters, 19=LightlessChasm, 20=CrimsonLand, 21=Daylight, 22=SecretOfSands, 27=Discover, 32=LakeOfFire
         private static readonly Dictionary<string, HouseStyle> HouseStyles = new Dictionary<string, HouseStyle>
         {
             ["forest"] = new HouseStyle(
                 "Forest",
-                TileID.WoodBlock, TileID.GrayBrick, TileID.RedBrick,
+                TileID.WoodBlock, TileID.StoneSlab, TileID.RedBrick,
                 WallID.Wood, WallID.Planked,
                 door: 0, table: 0, chair: 0, bookcase: 0,
-                platform: 0, lantern: 0, torch: 0,
-                painting3x2: 0, painting2x3: 1),
+                platform: 0, lantern: 3, torch: 0,
+                painting3x2: 13),
+
+            ["ocean"] = new HouseStyle(
+                "Ocean",
+                TileID.PalmWood, TileID.SandstoneBrick, TileID.RedDynastyShingles,
+                WallID.PalmWood, WallID.SandstoneBrick,
+                door: 28, table: 26, chair: 26, bookcase: 13,
+                platform: 17, lantern: 25, torch: 0,
+                painting3x2: 27),
 
             ["snow"] = new HouseStyle(
                 "Snow",
                 TileID.BorealWood, TileID.SnowBrick, TileID.IceBrick,
                 WallID.BorealWood, WallID.SnowBrick,
-                door: 30, table: 28, chair: 30, bookcase: 16,
+                door: 29, table: 27, chair: 27, bookcase: 16,
                 platform: 19, lantern: 26, torch: 9,
-                painting3x2: 2, painting2x3: 3),
+                painting3x2: 18),
 
             ["desert"] = new HouseStyle(
                 "Desert",
                 TileID.SmoothSandstone, TileID.SandstoneBrick, TileID.HardenedSand,
                 WallID.SmoothSandstone, WallID.SandstoneBrick,
-                door: 4, table: 30, chair: 6, bookcase: 32,
-                platform: 42, lantern: 36, torch: 16,
-                painting3x2: 4, painting2x3: 5),
+                door: 28, table: 18, chair: 18, bookcase: 6,
+                platform: 17, lantern: 1, torch: 16,
+                painting3x2: 22),
 
             ["jungle"] = new HouseStyle(
                 "Jungle",
                 TileID.RichMahogany, TileID.Mudstone, TileID.IridescentBrick,
                 WallID.RichMaogany, WallID.MudstoneBrick,
-                door: 2, table: 2, chair: 3, bookcase: 29,
-                platform: 2, lantern: 20, torch: 21,
-                painting3x2: 6, painting2x3: 7),
+                door: 2, table: 2, chair: 3, bookcase: 14,
+                platform: 2, lantern: 18, torch: 21,
+                painting3x2: 17),
 
             ["corruption"] = new HouseStyle(
                 "Corruption",
                 TileID.Ebonwood, TileID.EbonstoneBrick, TileID.DemoniteBrick,
                 WallID.Ebonwood, WallID.EbonstoneBrick,
-                door: 1, table: 1, chair: 2, bookcase: 30,
+                door: 1, table: 1, chair: 2, bookcase: 4,
                 platform: 1, lantern: 17, torch: 18,
-                painting3x2: 8, painting2x3: 9),
+                painting3x2: 19),
 
             ["crimson"] = new HouseStyle(
                 "Crimson",
                 TileID.Shadewood, TileID.CrimstoneBrick, TileID.CrimtaneBrick,
                 WallID.Shadewood, WallID.CrimstoneBrick,
-                door: 10, table: 8, chair: 11, bookcase: 15,
-                platform: 11, lantern: 22, torch: 19,
-                painting3x2: 10, painting2x3: 11),
+                door: 10, table: 8, chair: 10, bookcase: 15,
+                platform: 26, lantern: 20, torch: 19,
+                painting3x2: 20),
 
             ["hallow"] = new HouseStyle(
                 "Hallow",
                 TileID.Pearlwood, TileID.PearlstoneBrick, TileID.CrystalBlock,
                 WallID.Pearlwood, WallID.PearlstoneBrick,
-                door: 3, table: 3, chair: 4, bookcase: 31,
-                platform: 3, lantern: 21, torch: 20,
-                painting3x2: 12, painting2x3: 13),
+                door: 3, table: 3, chair: 4, bookcase: 27,
+                platform: 3, lantern: 19, torch: 20,
+                painting3x2: 16),
 
             ["underworld"] = new HouseStyle(
                 "Underworld",
                 TileID.ObsidianBrick, TileID.HellstoneBrick, TileID.AshWood,
                 WallID.ObsidianBrick, WallID.HellstoneBrick,
-                door: 19, table: 13, chair: 16, bookcase: 4,
+                door: 18, table: 13, chair: 15, bookcase: 4,
                 platform: 13, lantern: 14, torch: 7,
-                painting3x2: 14, painting2x3: 15),
+                painting3x2: 32),
 
             ["cavern"] = new HouseStyle(
                 "Cavern",
                 TileID.StoneSlab, TileID.GrayBrick, TileID.TinBrick,
                 WallID.StoneSlab, WallID.GrayBrick,
-                door: 0, table: 0, chair: 0, bookcase: 0,
-                platform: 0, lantern: 12, torch: 0,
-                painting3x2: 1, painting2x3: 2),
+                door: 0, table: 0, chair: 0, bookcase: 25,
+                platform: 0, lantern: 1, torch: 0,
+                painting3x2: 11),
         };
 
         private class BuildJob
@@ -774,24 +781,24 @@ namespace MagicBuilder
         }
 
         // ---------------------------------------------------------------
-        // Rumah NPC (UPGRADED: 3 Ukuran + Arsitektur Bervariasi + Anti-Overwall)
+        // Rumah NPC (3 Ukuran + 10 Biome Termasuk Ocean + Desain Refined)
         // ---------------------------------------------------------------
 
         private static void GetHouseBounds(int size, out int halfWidth, out int heightAbove)
         {
             switch (size)
             {
-                case 2: // 2 lantai vertikal (2 NPC): lebar interior 11 (total 13 + over-roof 15), tinggi 18
-                    halfWidth = 8;
-                    heightAbove = 18;
+                case 2:
+                    halfWidth = 10;
+                    heightAbove = 21;
                     break;
-                case 3: // Manor 3 kamar (3 NPC): lebar interior 21 (total 23 + over-roof 25), tinggi 19
-                    halfWidth = 13;
-                    heightAbove = 19;
+                case 3:
+                    halfWidth = 15;
+                    heightAbove = 21;
                     break;
-                default: // Cottage 1 NPC: lebar interior 11 (total 13 + over-roof 15), tinggi 12
-                    halfWidth = 8;
-                    heightAbove = 12;
+                default:
+                    halfWidth = 10;
+                    heightAbove = 15;
                     break;
             }
         }
@@ -807,7 +814,6 @@ namespace MagicBuilder
             int size = 1;
             string forcedBiome = null;
 
-            // Parse parameter fleksibel: bisa /build npchouse 2 snow atau /build npchouse snow 2
             for (int p = 1; p < parameters.Count; p++)
             {
                 string arg = parameters[p].ToLowerInvariant();
@@ -916,16 +922,23 @@ namespace MagicBuilder
             if (cy >= Main.UnderworldLayer)
                 return HouseStyles["underworld"];
 
-            int corruption = 0, crimson = 0, hallow = 0, snow = 0, desert = 0, jungle = 0;
+            // Deteksi area pantai/Ocean di ujung kiri & kanan dunia (di atas permukaan)
+            if (cy <= Main.worldSurface && (cx < 380 || cx > Main.maxTilesX - 380))
+                return HouseStyles["ocean"];
 
-            int x0 = Math.Max(0, cx - 20), x1 = Math.Min(Main.maxTilesX - 1, cx + 20);
-            int y0 = Math.Max(0, cy - 12), y1 = Math.Min(Main.maxTilesY - 1, cy + 12);
+            int corruption = 0, crimson = 0, hallow = 0, snow = 0, desert = 0, jungle = 0, ocean = 0;
+
+            int x0 = Math.Max(0, cx - 22), x1 = Math.Min(Main.maxTilesX - 1, cx + 22);
+            int y0 = Math.Max(0, cy - 14), y1 = Math.Min(Main.maxTilesY - 1, cy + 14);
 
             for (int x = x0; x <= x1; x++)
             {
                 for (int y = y0; y <= y1; y++)
                 {
                     var t = Main.tile[x, y];
+                    if (t.liquid > 120 && t.liquidType() == 0 && y >= cy)
+                        ocean++;
+
                     if (!t.active())
                         continue;
 
@@ -943,6 +956,8 @@ namespace MagicBuilder
                             desert++; break;
                         case 60:
                             jungle++; break;
+                        case 81: case 323: // Coral & Palm Tree
+                            ocean += 3; break;
                     }
                 }
             }
@@ -966,6 +981,8 @@ namespace MagicBuilder
             Consider("snow", snow);
             Consider("desert", desert);
             Consider("jungle", jungle);
+            if (cy <= Main.worldSurface && (cx < 550 || cx > Main.maxTilesX - 550))
+                Consider("ocean", ocean);
 
             if (best != null)
                 return HouseStyles[best];
@@ -990,135 +1007,104 @@ namespace MagicBuilder
         }
 
         // ===============================================================
-        // VARIAN 1: COTTAGE 1 NPC (Atap Pelana Miring + Cerobong + Jendela)
+        // VARIAN 1: COTTAGE 1 NPC (Porch + Atap Sleek + Cerobong Asap)
         // ===============================================================
         private void BuildHouse1Npc(BuildJob job)
         {
             HouseStyle st = job.Style;
             int cx = job.X;
             int fy = job.StartY;
-            int left = cx - 6;   // Tembok kiri di cx-6
-            int right = cx + 6;  // Tembok kanan di cx+6 (interior cx-5..cx+5 = 11 lebar)
-            int ceilingY = fy - 6; // Plafon di fy-6 (interior fy-5..fy-1 = 5 tinggi)
-            int roofPeakY = fy - 11;
+            int left = cx - 7;     // Tembok kiri di cx-7 (interior cx-6..cx+6 = 13 lebar)
+            int right = cx + 7;    // Tembok kanan di cx+7
+            int ceilingY = fy - 7; // Plafon di fy-7 (interior fy-6..fy-1 = 6 tinggi)
+            int topY = fy - 14;
 
-            // 1. Bersihkan area atas secara presisi (hanya area bangunan & atap, TIDAK menghapus dinding luar)
-            ClearAreaAndOutsideWalls(job, cx - 8, roofPeakY - 1, cx + 8, fy - 1);
+            ClearAreaAndOutsideWalls(job, cx - 10, topY, cx + 10, fy - 1);
+            int deepest = BuildSmartFoundation(job, left - 1, right, fy, st.BaseBlock);
 
-            // 2. Fondasi cerdas: 1 baris batu di bawah lantai + hanya 3 pilar penyangga jika menggantung (bukan kotak penuh!)
-            int deepest = BuildSmartFoundation(job, left, right, fy, st.BaseBlock);
-
-            // 3. Lantai kombinasi (Batu di pinggir, Kayu/Utama di tengah)
+            // Lantai utama + teras depan di left-1 (cx-8)
+            PlaceBlock(job, left - 1, fy, st.BaseBlock);
             for (int x = left; x <= right; x++)
             {
-                ushort floorMat = (x <= left + 1 || x >= right - 1) ? st.BaseBlock : st.MainBlock;
-                PlaceBlock(job, x, fy, floorMat);
+                ushort mat = (x <= left + 1 || x >= right - 1) ? st.BaseBlock : st.MainBlock;
+                PlaceBlock(job, x, fy, mat);
             }
 
-            // 4. Tembok Kiri & Kanan (Kombinasi batu di bawah, kayu di atas) & Plafon
+            // Tiang teras depan pakai WoodenBeam di cx-8
+            for (int y = ceilingY + 1; y < fy; y++)
+                PlaceBeam(job, left - 1, y);
+
+            // Tembok Kiri & Kanan (Fondasi batu di bawah, MainBlock di atas)
             for (int y = ceilingY; y < fy; y++)
             {
-                ushort wallMat = (y >= fy - 2) ? st.BaseBlock : st.MainBlock;
-                PlaceBlock(job, left, y, wallMat);
-                PlaceBlock(job, right, y, wallMat);
+                ushort mat = (y >= fy - 2) ? st.BaseBlock : st.MainBlock;
+                PlaceBlock(job, left, y, mat);
+                PlaceBlock(job, right, y, mat);
             }
-            for (int x = left - 1; x <= right + 1; x++)
-            {
+
+            // Plafon memanjang sampai menutupi teras depan (left-1 .. right)
+            for (int x = left - 1; x <= right; x++)
                 PlaceBlock(job, x, ceilingY, st.MainBlock);
-            }
 
-            // 5. Dinding latar HANYA di dalam interior (left+1 .. right-1) -> anti overwall!
-            for (int y = ceilingY + 1; y <= fy - 1; y++)
-            {
-                for (int x = left + 1; x <= right - 1; x++)
-                {
-                    // Baris paling bawah pakai AccentWall (wainscoting), sisanya MainWall
-                    ushort w = (y == fy - 1) ? st.AccentWall : st.MainWall;
-                    SetWall(x, y, w);
-                }
-            }
+            // Dinding Latar Interior (HANYA di dalam ruangan left+1 .. right-1)
+            DecorateRoomWalls(left + 1, right - 1, ceilingY + 1, fy - 1, cx - 1, cx + 1, st);
 
-            // Jendela kaca di tengah (3x2)
-            for (int x = cx - 1; x <= cx + 1; x++)
-            {
-                SetWall(x, fy - 4, WallID.Glass);
-                SetWall(x, fy - 3, WallID.Glass);
-            }
+            // Atap Sleek 4-Lapis dengan Eaves Miring + Cerobong Asap Aktif
+            BuildSleekRoof(job, cx, ceilingY - 1, 9, st.RoofBlock, st.BaseBlock, st.AccentWall);
+            WorldGen.PlaceObject(cx + 3, ceilingY - 5, TileID.Chimney, true);
 
-            // 6. Atap Pelana Segitiga Miring (Gable Roof) + Loteng (Attic)
-            BuildGableRoof(job, cx, ceilingY - 1, 7, st.RoofBlock, st.MainBlock, st.AccentWall);
-
-            // Cerobong asap di sisi kanan atap
-            PlaceBlock(job, cx + 4, ceilingY - 4, st.BaseBlock);
-            PlaceBlock(job, cx + 4, ceilingY - 5, st.BaseBlock);
-            PlaceBlock(job, cx + 4, ceilingY - 6, st.BaseBlock);
-
-            // 7. Pintu kiri & kanan
+            // Pintu Kiri & Kanan
             PlaceHouseDoor(job, left, fy - 1, st.Door);
             PlaceHouseDoor(job, right, fy - 1, st.Door);
 
-            // 8. Furnitur & Dekorasi Valid (Tanpa Trophy, Rak Buku Sesuai Biome)
-            // Kiri: Meja & Kursi
-            if (!WorldGen.PlaceObject(cx - 3, fy - 1, TileID.Tables, true, st.Table))
-                job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx - 5, fy - 1, TileID.Chairs, true, st.Chair, 0, -1, 1))
-                job.ObjectFailed++;
+            // Furnitur & Dekorasi (Semua duduk di atas blok padat!)
+            PlaceChair(job, cx - 5, fy - 1, st.Chair, 1);
+            PlaceTableWithDecor(job, cx - 3, fy - 1, st.Table, 1); // Mug di atas meja
+            PlacePainting(job, cx - 3, fy - 5, st.Painting3x2);
+            PlaceBookcase(job, cx + 4, fy - 1, st.Bookcase);       // Duduk di cx+3..cx+5 (padat!)
+            PlaceCeilingLight(job, cx, ceilingY + 1, st.Lantern, st.Torch);
 
-            // Kanan: Rak Buku sesuai biome
-            if (!WorldGen.PlaceObject(cx + 3, fy - 1, TileID.Bookcases, true, st.Bookcase))
-                job.ObjectFailed++;
+            // Obor teras luar & obor dekat pintu kanan
+            WorldGen.PlaceTile(left - 1, fy - 5, TileID.Torches, true, true, -1, st.Torch);
+            WorldGen.PlaceTile(cx + 6, fy - 5, TileID.Torches, true, true, -1, st.Torch);
 
-            // Lukisan asli (3x2) di atas meja/jendela samping
-            if (!WorldGen.PlaceObject(cx - 3, fy - 4, TileID.Painting3X2, true, st.Painting3x2))
-                job.ObjectFailed++;
-
-            // Penerangan: Lentera gantung di tengah + Obor biome di dekat pintu
-            if (!WorldGen.PlaceObject(cx, ceilingY + 1, TileID.HangingLanterns, true, st.Lantern))
-            {
-                if (!WorldGen.PlaceTile(cx, fy - 5, TileID.Torches, true, true, -1, st.Torch))
-                    job.ObjectFailed++;
-            }
-            WorldGen.PlaceTile(cx - 5, fy - 4, TileID.Torches, true, true, -1, st.Torch);
-            WorldGen.PlaceTile(cx + 5, fy - 4, TileID.Torches, true, true, -1, st.Torch);
-
-            // Kirim update rect ke semua player
-            int width = (cx + 8) - (cx - 8) + 1;
-            int height = deepest - (roofPeakY - 1) + 1;
-            TSPlayer.All.SendTileRect((short)(cx - 8), (short)(roofPeakY - 1), (byte)width, (byte)height);
+            int width = (cx + 10) - (cx - 10) + 1;
+            int height = deepest - topY + 1;
+            TSPlayer.All.SendTileRect((short)(cx - 10), (short)topY, (byte)width, (byte)height);
         }
 
         // ===============================================================
-        // VARIAN 2: DUPLEX 2 LANTAI (2 NPC - Bertingkat + Tangga Platform)
+        // VARIAN 2: DUPLEX 2 LANTAI (2 NPC - Tangga Platform Bersih)
         // ===============================================================
         private void BuildHouse2Npc(BuildJob job)
         {
             HouseStyle st = job.Style;
             int cx = job.X;
             int fy = job.StartY;
-            int left = cx - 6;
-            int right = cx + 6;       // Interior lebar 11 (cx-5..cx+5)
-            int midFloorY = fy - 6;   // Lantai 2 di fy-6 (interior lt.1: fy-5..fy-1)
-            int ceilingY = fy - 12;   // Plafon lt.2 di fy-12 (interior lt.2: fy-11..fy-7)
-            int roofPeakY = fy - 17;
+            int left = cx - 7;
+            int right = cx + 7;       // Interior lebar 13 (cx-6..cx+6)
+            int midFloorY = fy - 7;   // Lantai 2 di fy-7 (interior lt.1: fy-6..fy-1 = 6 tinggi)
+            int ceilingY = fy - 14;   // Plafon lt.2 di fy-14 (interior lt.2: fy-13..fy-8 = 6 tinggi)
+            int topY = fy - 21;
 
-            ClearAreaAndOutsideWalls(job, cx - 8, roofPeakY - 1, cx + 8, fy - 1);
+            ClearAreaAndOutsideWalls(job, cx - 10, topY, cx + 10, fy - 1);
             int deepest = BuildSmartFoundation(job, left, right, fy, st.BaseBlock);
 
-            // Lantai Dasar (Batu di pinggir, Utama di tengah)
+            // Lantai Dasar
             for (int x = left; x <= right; x++)
                 PlaceBlock(job, x, fy, (x <= left + 1 || x >= right - 1) ? st.BaseBlock : st.MainBlock);
 
-            // Sekat Lantai 2 (dengan lubang akses tangga platform di kanan: cx+2..cx+4)
+            // Lantai 2: cx-7..cx+2 & cx+6..cx+7 PADAT, cx+3..cx+5 PLATFORM untuk akses naik
             for (int x = left; x <= right; x++)
             {
-                if (x >= cx + 2 && x <= cx + 4)
+                if (x >= cx + 3 && x <= cx + 5)
                     PlacePlatform(job, x, midFloorY, st.Platform);
                 else
                     PlaceBlock(job, x, midFloorY, st.MainBlock);
             }
 
             // Plafon Atas
-            for (int x = left - 1; x <= right + 1; x++)
+            for (int x = left; x <= right; x++)
                 PlaceBlock(job, x, ceilingY, st.MainBlock);
 
             // Tembok Luar Kiri & Kanan
@@ -1129,179 +1115,278 @@ namespace MagicBuilder
                 PlaceBlock(job, right, y, mat);
             }
 
-            // Dinding Latar Interior Lantai 1 & Lantai 2 (Presisi di dalam tembok)
-            for (int y = ceilingY + 1; y <= fy - 1; y++)
-            {
-                if (y == midFloorY) continue;
-                bool isBottomRow = (y == fy - 1 || y == midFloorY - 1);
-                for (int x = left + 1; x <= right - 1; x++)
-                {
-                    SetWall(x, y, isBottomRow ? st.AccentWall : st.MainWall);
-                }
-            }
+            // Dinding Latar Lantai 1 & Lantai 2 (Hanya interior, tidak bocor keluar)
+            DecorateRoomWalls(left + 1, right - 1, midFloorY + 1, fy - 1, cx - 1, cx + 1, st);
+            DecorateRoomWalls(left + 1, right - 1, ceilingY + 1, midFloorY - 1, cx - 2, cx, st);
 
-            // Jendela Kaca Lantai 1 & Lantai 2
-            for (int x = cx - 1; x <= cx + 1; x++)
-            {
-                SetWall(x, fy - 4, WallID.Glass);
-                SetWall(x, fy - 3, WallID.Glass);
-                SetWall(x, midFloorY - 4, WallID.Glass);
-                SetWall(x, midFloorY - 3, WallID.Glass);
-            }
+            // Atap Sleek 4-Lapis + Cerobong Asap
+            BuildSleekRoof(job, cx, ceilingY - 1, 9, st.RoofBlock, st.BaseBlock, st.AccentWall);
+            WorldGen.PlaceObject(cx + 3, ceilingY - 5, TileID.Chimney, true);
 
-            // Atap Miring
-            BuildGableRoof(job, cx, ceilingY - 1, 7, st.RoofBlock, st.MainBlock, st.AccentWall);
-
-            // Pintu Kiri & Kanan di Lantai 1
+            // Pintu Kiri & Kanan Lantai 1
             PlaceHouseDoor(job, left, fy - 1, st.Door);
             PlaceHouseDoor(job, right, fy - 1, st.Door);
 
             // --- Furnitur Lantai 1 (NPC 1) ---
-            if (!WorldGen.PlaceObject(cx - 3, fy - 1, TileID.Tables, true, st.Table)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx - 5, fy - 1, TileID.Chairs, true, st.Chair, 0, -1, 1)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx, fy - 1, TileID.Bookcases, true, st.Bookcase)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx - 3, fy - 4, TileID.Painting2X3, true, st.Painting2x3)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx, midFloorY + 1, TileID.HangingLanterns, true, st.Lantern))
-                WorldGen.PlaceTile(cx - 5, fy - 4, TileID.Torches, true, true, -1, st.Torch);
+            PlaceChair(job, cx - 5, fy - 1, st.Chair, 1);
+            PlaceTableWithDecor(job, cx - 3, fy - 1, st.Table, 1);
+            PlacePainting(job, cx - 3, fy - 5, st.Painting3x2);
+            PlaceBookcase(job, cx + 3, fy - 1, st.Bookcase);       // Duduk di cx+2..cx+4 (padat)
+            PlaceCeilingLight(job, cx, midFloorY + 1, st.Lantern, st.Torch);
+            WorldGen.PlaceTile(cx + 6, fy - 5, TileID.Torches, true, true, -1, st.Torch);
 
-            // --- Furnitur Lantai 2 (NPC 2) ---
-            if (!WorldGen.PlaceObject(cx - 3, midFloorY - 1, TileID.Tables, true, st.Table)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx - 5, midFloorY - 1, TileID.Chairs, true, st.Chair, 0, -1, 1)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx + 3, midFloorY - 1, TileID.Bookcases, true, st.Bookcase)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx - 3, midFloorY - 4, TileID.Painting3X2, true, st.Painting3x2)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx, ceilingY + 1, TileID.HangingLanterns, true, st.Lantern))
-                WorldGen.PlaceTile(cx - 5, midFloorY - 4, TileID.Torches, true, true, -1, st.Torch);
+            // --- Furnitur Lantai 2 (NPC 2 - 100% di atas lantai padat cx-6..cx+2!) ---
+            PlaceChair(job, cx - 5, midFloorY - 1, st.Chair, 1);
+            PlaceTableWithDecor(job, cx - 3, midFloorY - 1, st.Table, 2); // Vas bunga di atas meja
+            PlacePainting(job, cx - 3, midFloorY - 5, st.Painting3x2);
+            PlaceBookcase(job, cx + 1, midFloorY - 1, st.Bookcase); // Duduk di cx, cx+1, cx+2 (100% padat!)
+            PlaceCeilingLight(job, cx - 1, ceilingY + 1, st.Lantern, st.Torch);
+            WorldGen.PlaceTile(cx + 6, midFloorY - 5, TileID.Torches, true, true, -1, st.Torch);
 
-            int width = (cx + 8) - (cx - 8) + 1;
-            int height = deepest - (roofPeakY - 1) + 1;
-            TSPlayer.All.SendTileRect((short)(cx - 8), (short)(roofPeakY - 1), (byte)width, (byte)height);
+            int width = (cx + 10) - (cx - 10) + 1;
+            int height = deepest - topY + 1;
+            TSPlayer.All.SendTileRect((short)(cx - 10), (short)topY, (byte)width, (byte)height);
         }
 
         // ===============================================================
-        // VARIAN 3: MANOR 3 KAMAR (3 NPC - 2 Kamar Bawah + 1 Kamar Atas)
+        // VARIAN 3: VILLA / MANOR 3 KAMAR (3 NPC - Atap Sayap Bertingkat)
         // ===============================================================
         private void BuildHouse3Npc(BuildJob job)
         {
             HouseStyle st = job.Style;
             int cx = job.X;
             int fy = job.StartY;
-            int left = cx - 11;
-            int right = cx + 11;      // Lebar total 23 (interior 21: dibagi 2 kamar @10 tile + 1 sekat tengah)
-            int midFloorY = fy - 6;   // Lantai 2 di fy-6
-            int ceilingY = fy - 12;   // Plafon lt.2 di fy-12 (atap hanya selebar cx-7..cx+7 agar bertingkat)
-            int roofPeakY = fy - 18;
+            int left = cx - 12;
+            int right = cx + 12;      // Lebar total 25 (Kamar kiri: cx-11..cx-1, Kamar kanan: cx+1..cx+11)
+            int midFloorY = fy - 7;   // Lantai 2 di fy-7
+            int topLeft = cx - 8;
+            int topRight = cx + 8;    // Kamar atas lebar interior 15 (cx-7..cx+7)
+            int ceilingY = fy - 14;   // Plafon lt.2 di fy-14
+            int topY = fy - 21;
 
-            ClearAreaAndOutsideWalls(job, cx - 13, roofPeakY - 1, cx + 13, fy - 1);
+            ClearAreaAndOutsideWalls(job, cx - 15, topY, cx + 15, fy - 1);
             int deepest = BuildSmartFoundation(job, left, right, fy, st.BaseBlock);
 
             // Lantai Dasar
             for (int x = left; x <= right; x++)
-                PlaceBlock(job, x, fy, (x <= left + 1 || x >= right - 1 || x == cx) ? st.BaseBlock : st.MainBlock);
+            {
+                bool isTrim = (x <= left + 1 || x >= right - 1 || x == cx);
+                PlaceBlock(job, x, fy, isTrim ? st.BaseBlock : st.MainBlock);
+            }
 
-            // Dinding Luar Kiri & Kanan Lantai 1 + Sekat Tengah Lantai 1
+            // Tembok Luar Kiri & Kanan Lantai 1 + Sekat Tengah Lantai 1
             for (int y = midFloorY; y < fy; y++)
             {
                 PlaceBlock(job, left, y, st.MainBlock);
                 PlaceBlock(job, right, y, st.MainBlock);
-                PlaceBlock(job, cx, y, st.MainBlock); // Sekat pemisah kamar kiri & kanan
+                PlaceBlock(job, cx, y, st.MainBlock);
             }
 
-            // Lantai 2 (Full dari left-1 sampai right+1 sebagai balkon/teras atap samping, dengan akses platform)
-            for (int x = left - 1; x <= right + 1; x++)
+            // Lantai 2 (midFloorY):
+            // cx-12..cx+2 PADAT | cx+3..cx+5 PLATFORM (tangga naik) | cx+6..cx+12 PADAT
+            for (int x = left; x <= right; x++)
             {
-                if ((x >= cx - 4 && x <= cx - 2) || (x >= cx + 2 && x <= cx + 4))
+                if (x >= cx + 3 && x <= cx + 5)
                     PlacePlatform(job, x, midFloorY, st.Platform);
                 else
                     PlaceBlock(job, x, midFloorY, st.MainBlock);
             }
 
-            // Struktur Kamar Lantai 2 (lebih ramping di tengah: cx-7 .. cx+7 biar ada balkon samping!)
-            int topLeft = cx - 7;
-            int topRight = cx + 7;
+            // Tembok Kamar Atas (cx-8 & cx+8) + Plafon Atas
             for (int y = ceilingY; y < midFloorY; y++)
             {
                 PlaceBlock(job, topLeft, y, st.MainBlock);
                 PlaceBlock(job, topRight, y, st.MainBlock);
             }
-            for (int x = topLeft - 1; x <= topRight + 1; x++)
+            for (int x = topLeft; x <= topRight; x++)
                 PlaceBlock(job, x, ceilingY, st.MainBlock);
 
-            // Pagar balkon teras kiri & kanan di lantai 2 pakai platform
-            PlacePlatform(job, left, midFloorY - 1, st.Platform);
-            PlacePlatform(job, right, midFloorY - 1, st.Platform);
+            // Dinding Latar Interior Lantai 1 (Kiri & Kanan) + Lantai 2
+            DecorateRoomWalls(left + 1, cx - 1, midFloorY + 1, fy - 1, cx - 7, cx - 5, st);
+            DecorateRoomWalls(cx + 1, right - 1, midFloorY + 1, fy - 1, cx + 5, cx + 7, st);
+            DecorateRoomWalls(topLeft + 1, topRight - 1, ceilingY + 1, midFloorY - 1, cx - 2, cx, st);
 
-            // Dinding Latar Interior Lantai 1 (Kiri: left+1..cx-1, Kanan: cx+1..right-1)
-            for (int y = midFloorY + 1; y <= fy - 1; y++)
+            // Pilar WoodenBeam dekoratif di sudut kamar atas
+            for (int y = ceilingY + 1; y < midFloorY; y++)
             {
-                ushort w = (y == fy - 1) ? st.AccentWall : st.MainWall;
-                for (int x = left + 1; x <= cx - 1; x++) SetWall(x, y, w);
-                for (int x = cx + 1; x <= right - 1; x++) SetWall(x, y, w);
+                PlaceBeam(job, topLeft + 1, y);
+                PlaceBeam(job, topRight - 1, y);
             }
 
-            // Dinding Latar Interior Lantai 2 (topLeft+1 .. topRight-1)
-            for (int y = ceilingY + 1; y <= midFloorY - 1; y++)
-            {
-                ushort w = (y == midFloorY - 1) ? st.AccentWall : st.MainWall;
-                for (int x = topLeft + 1; x <= topRight - 1; x++) SetWall(x, y, w);
-            }
+            // Atap Sayap Samping (kiri & kanan lantai 1) + Atap Utama Lantai 2 (tanpa platform melayang!)
+            BuildWingRoof(job, left - 1, topLeft - 1, midFloorY - 1, true, st.RoofBlock, st.BaseBlock);
+            BuildWingRoof(job, topRight + 1, right + 1, midFloorY - 1, false, st.RoofBlock, st.BaseBlock);
+            BuildSleekRoof(job, cx, ceilingY - 1, 10, st.RoofBlock, st.BaseBlock, st.AccentWall);
+            WorldGen.PlaceObject(cx + 4, ceilingY - 5, TileID.Chimney, true);
 
-            // Jendela kaca di ketiga kamar
-            for (int dx = -1; dx <= 1; dx++)
-            {
-                SetWall(cx - 5 + dx, fy - 4, WallID.Glass);
-                SetWall(cx - 5 + dx, fy - 3, WallID.Glass);
-
-                SetWall(cx + 5 + dx, fy - 4, WallID.Glass);
-                SetWall(cx + 5 + dx, fy - 3, WallID.Glass);
-
-                SetWall(cx + dx, midFloorY - 4, WallID.Glass);
-                SetWall(cx + dx, midFloorY - 3, WallID.Glass);
-            }
-
-            // Atap Miring di atas Lantai 2
-            BuildGableRoof(job, cx, ceilingY - 1, 8, st.RoofBlock, st.MainBlock, st.AccentWall);
-
-            // Pintu: 2 pintu luar lantai 1, 1 pintu penghubung tengah lantai 1, 2 pintu balkon lantai 2
+            // Pintu: Luar kiri, Tengah penghubung, Luar kanan
             PlaceHouseDoor(job, left, fy - 1, st.Door);
-            PlaceHouseDoor(job, right, fy - 1, st.Door);
             PlaceHouseDoor(job, cx, fy - 1, st.Door);
-            PlaceHouseDoor(job, topLeft, midFloorY - 1, st.Door);
-            PlaceHouseDoor(job, topRight, midFloorY - 1, st.Door);
+            PlaceHouseDoor(job, right, fy - 1, st.Door);
 
-            // --- Kamar 1 (Bawah Kiri - NPC 1) ---
-            if (!WorldGen.PlaceObject(cx - 7, fy - 1, TileID.Tables, true, st.Table)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx - 9, fy - 1, TileID.Chairs, true, st.Chair, 0, -1, 1)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx - 3, fy - 1, TileID.Bookcases, true, st.Bookcase)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx - 7, fy - 4, TileID.Painting2X3, true, st.Painting2x3)) job.ObjectFailed++;
-            WorldGen.PlaceObject(cx - 5, midFloorY + 1, TileID.HangingLanterns, true, st.Lantern);
-            WorldGen.PlaceTile(cx - 9, fy - 4, TileID.Torches, true, true, -1, st.Torch);
+            // --- Kamar 1: Bawah Kiri (NPC 1) ---
+            PlaceChair(job, cx - 10, fy - 1, st.Chair, 1);
+            PlaceTableWithDecor(job, cx - 8, fy - 1, st.Table, 1);
+            PlacePainting(job, cx - 8, fy - 5, st.Painting3x2);
+            PlaceBookcase(job, cx - 3, fy - 1, st.Bookcase);       // Duduk di cx-4..cx-2 (padat)
+            PlaceCeilingLight(job, cx - 6, midFloorY + 1, st.Lantern, st.Torch);
 
-            // --- Kamar 2 (Bawah Kanan - NPC 2) ---
-            if (!WorldGen.PlaceObject(cx + 7, fy - 1, TileID.Tables, true, st.Table)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx + 9, fy - 1, TileID.Chairs, true, st.Chair, 0, -1, -1)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx + 3, fy - 1, TileID.Bookcases, true, st.Bookcase)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx + 7, fy - 4, TileID.Painting2X3, true, st.Painting2x3)) job.ObjectFailed++;
-            WorldGen.PlaceObject(cx + 5, midFloorY + 1, TileID.HangingLanterns, true, st.Lantern);
-            WorldGen.PlaceTile(cx + 9, fy - 4, TileID.Torches, true, true, -1, st.Torch);
+            // --- Kamar 2: Bawah Kanan (NPC 2) ---
+            PlaceBookcase(job, cx + 3, fy - 1, st.Bookcase);       // Duduk di cx+2..cx+4 (padat)
+            PlaceTableWithDecor(job, cx + 8, fy - 1, st.Table, 1);
+            PlaceChair(job, cx + 10, fy - 1, st.Chair, -1);
+            PlacePainting(job, cx + 8, fy - 5, st.Painting3x2);
+            PlaceCeilingLight(job, cx + 6, midFloorY + 1, st.Lantern, st.Torch);
 
-            // --- Kamar 3 (Atas Tengah - NPC 3) ---
-            if (!WorldGen.PlaceObject(cx - 3, midFloorY - 1, TileID.Tables, true, st.Table)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx - 5, midFloorY - 1, TileID.Chairs, true, st.Chair, 0, -1, 1)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx + 4, midFloorY - 1, TileID.Bookcases, true, st.Bookcase)) job.ObjectFailed++;
-            if (!WorldGen.PlaceObject(cx - 3, midFloorY - 4, TileID.Painting3X2, true, st.Painting3x2)) job.ObjectFailed++;
-            WorldGen.PlaceObject(cx, ceilingY + 1, TileID.HangingLanterns, true, st.Lantern);
-            WorldGen.PlaceTile(cx + 5, midFloorY - 4, TileID.Torches, true, true, -1, st.Torch);
+            // --- Kamar 3: Atas Tengah (NPC 3 - Bookcase di cx-1..cx+1 = 100% PADAT, anti-hancur!) ---
+            PlaceChair(job, cx - 6, midFloorY - 1, st.Chair, 1);
+            PlaceTableWithDecor(job, cx - 4, midFloorY - 1, st.Table, 2);
+            PlacePainting(job, cx - 4, midFloorY - 5, st.Painting3x2);
+            PlaceBookcase(job, cx, midFloorY - 1, st.Bookcase);     // Duduk di cx-1, cx, cx+1 (100% padat!)
+            PlaceCeilingLight(job, cx - 1, ceilingY + 1, st.Lantern, st.Torch);
+            WorldGen.PlaceTile(cx + 6, midFloorY - 5, TileID.Torches, true, true, -1, st.Torch);
 
-            int width = (cx + 13) - (cx - 13) + 1;
-            int height = deepest - (roofPeakY - 1) + 1;
-            TSPlayer.All.SendTileRect((short)(cx - 13), (short)(roofPeakY - 1), (byte)width, (byte)height);
+            int width = (cx + 15) - (cx - 15) + 1;
+            int height = deepest - topY + 1;
+            TSPlayer.All.SendTileRect((short)(cx - 15), (short)topY, (byte)width, (byte)height);
         }
 
         // ---------------------------------------------------------------
-        // Helper Konstruksi Rumah
+        // Helper Konstruksi Rumah & Dekorasi
         // ---------------------------------------------------------------
 
-        /// <summary>Bersihkan blok dan dinding lama di area atas rumah supaya dinding tidak bocor/over.</summary>
+        private static void DecorateRoomWalls(int x0, int x1, int y0, int y1, int winX0, int winX1, HouseStyle st)
+        {
+            for (int y = y0; y <= y1; y++)
+            {
+                for (int x = x0; x <= x1; x++)
+                {
+                    // Baris paling bawah (wainscoting) & bingkai sisi jendela pakai AccentWall
+                    bool isAccent = (y == y1) || (x == winX0 - 1) || (x == winX1 + 1);
+                    SetWall(x, y, isAccent ? st.AccentWall : st.MainWall);
+                }
+            }
+
+            // Jendela kaca 3x3 di tengah
+            for (int x = winX0; x <= winX1; x++)
+            {
+                for (int y = y1 - 4; y <= y1 - 2; y++)
+                {
+                    if (y >= y0 && x >= x0 && x <= x1)
+                        SetWall(x, y, WallID.Glass);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Atap miring rendah 4-lapis dengan tritisan (eaves) yang di-slope atas & bawah agar ramping dan realistis.
+        /// </summary>
+        private static void BuildSleekRoof(BuildJob job, int cx, int baseRoofY, int halfSpan, ushort roofBlock, ushort trimBlock, ushort atticWall)
+        {
+            // Lapis 0 (tritisan paling bawah, lebar penuh dengan ujung bawah meruncing)
+            int xL0 = cx - halfSpan;
+            int xR0 = cx + halfSpan;
+            for (int x = xL0; x <= xR0; x++)
+                PlaceBlock(job, x, baseRoofY, roofBlock);
+            SetSlope(xL0, baseRoofY, 4); // Miring bawah kiri
+            SetSlope(xR0, baseRoofY, 3); // Miring bawah kanan
+
+            // Lapis 1..3 (atap miring bertingkat, bagian atas datar agar bisa dipasangi Chimney)
+            for (int step = 1; step <= 3; step++)
+            {
+                int y = baseRoofY - step;
+                int shrink = (step == 1) ? 1 : (step == 2 ? 3 : 5);
+                int xL = cx - halfSpan + shrink;
+                int xR = cx + halfSpan - shrink;
+
+                // Isi dinding loteng di bagian dalam saja
+                for (int wx = xL + 1; wx <= xR - 1; wx++)
+                    SetWall(wx, y, atticWall);
+
+                for (int x = xL; x <= xR; x++)
+                {
+                    ushort mat = (step == 3 && (x == xL || x == xR)) ? trimBlock : roofBlock;
+                    PlaceBlock(job, x, y, mat);
+                }
+
+                SetSlope(xL, y, 2); // Miring atas kiri (/)
+                SetSlope(xR, y, 1); // Miring atas kanan (\)
+            }
+        }
+
+        /// <summary>Atap sayap miring untuk sisi kiri/kanan pada rumah ukuran 3.</summary>
+        private static void BuildWingRoof(BuildJob job, int outerX, int innerX, int baseY, bool slopeUpRight, ushort roofBlock, ushort trimBlock)
+        {
+            // Baris bawah sayap
+            for (int x = outerX; x <= innerX; x++)
+                PlaceBlock(job, x, baseY, roofBlock);
+
+            if (slopeUpRight)
+            {
+                SetSlope(outerX, baseY, 4);
+                for (int x = outerX + 1; x <= innerX; x++)
+                    PlaceBlock(job, x, baseY - 1, (x == innerX) ? trimBlock : roofBlock);
+                SetSlope(outerX + 1, baseY - 1, 2);
+
+                for (int x = outerX + 3; x <= innerX; x++)
+                    PlaceBlock(job, x, baseY - 2, roofBlock);
+                SetSlope(outerX + 3, baseY - 2, 2);
+            }
+            else
+            {
+                SetSlope(innerX, baseY, 3);
+                for (int x = outerX; x <= innerX - 1; x++)
+                    PlaceBlock(job, x, baseY - 1, (x == outerX) ? trimBlock : roofBlock);
+                SetSlope(innerX - 1, baseY - 1, 1);
+
+                for (int x = outerX; x <= innerX - 3; x++)
+                    PlaceBlock(job, x, baseY - 2, roofBlock);
+                SetSlope(innerX - 3, baseY - 2, 1);
+            }
+        }
+
+        private static void PlaceChair(BuildJob job, int x, int y, int style, int dir)
+        {
+            if (!WorldGen.PlaceObject(x, y, TileID.Chairs, true, style, 0, -1, dir))
+                job.ObjectFailed++;
+        }
+
+        private static void PlaceTableWithDecor(BuildJob job, int x, int y, int tableStyle, int bottleStyle)
+        {
+            if (!WorldGen.PlaceObject(x, y, TileID.Tables, true, tableStyle))
+                job.ObjectFailed++;
+            else
+                WorldGen.PlaceTile(x, y - 2, TileID.Bottles, true, true, -1, bottleStyle);
+        }
+
+        private static void PlaceBookcase(BuildJob job, int x, int y, int style)
+        {
+            if (!WorldGen.PlaceObject(x, y, TileID.Bookcases, true, style))
+                job.ObjectFailed++;
+        }
+
+        private static void PlacePainting(BuildJob job, int x, int y, int style)
+        {
+            if (!WorldGen.PlaceObject(x, y, TileID.Painting3X2, true, style))
+                job.ObjectFailed++;
+        }
+
+        private static void PlaceCeilingLight(BuildJob job, int x, int y, int lanternStyle, int fallbackTorch)
+        {
+            if (!WorldGen.PlaceObject(x, y, TileID.HangingLanterns, true, lanternStyle))
+            {
+                if (!WorldGen.PlaceTile(x, y, TileID.Torches, true, true, -1, fallbackTorch))
+                    job.ObjectFailed++;
+            }
+        }
+
+        private static void PlaceBeam(BuildJob job, int x, int y)
+        {
+            ClearTile(job, x, y);
+            if (WorldGen.PlaceTile(x, y, TileID.WoodenBeam, true, true, -1, 0))
+                WorldGen.SquareTileFrame(x, y, true);
+        }
+
         private static void ClearAreaAndOutsideWalls(BuildJob job, int x0, int y0, int x1, int y1)
         {
             for (int y = y0; y <= y1; y++)
@@ -1319,15 +1404,10 @@ namespace MagicBuilder
             }
         }
 
-        /// <summary>
-        /// Fondasi pintar: buat 1 baris sub-lantai di fy+1, dan hanya bangun pilar penyangga vertikal
-        /// di ujung kiri, ujung kanan, dan tengah apabila lantai menggantung di udara (tidak penuh kotak!).
-        /// </summary>
         private static int BuildSmartFoundation(BuildJob job, int left, int right, int fy, ushort baseBlock)
         {
             int deepest = fy;
 
-            // 1 lapis sub-lantai batu di fy+1 hanya di titik yang kosong (agar rumah tidak melayang)
             for (int x = left; x <= right; x++)
             {
                 var t = Main.tile[x, fy + 1];
@@ -1338,7 +1418,6 @@ namespace MagicBuilder
                 }
             }
 
-            // Pilar penyangga vertikal di sisi kiri (left, left+1), kanan (right-1, right), dan tengah (cx)
             int cx = (left + right) / 2;
             int[] pillars = { left, left + 1, cx, right - 1, right };
 
@@ -1356,44 +1435,6 @@ namespace MagicBuilder
             }
 
             return deepest;
-        }
-
-        /// <summary>Bangun atap segitiga miring (sloped roof) dengan loteng berisi dinding aksen.</summary>
-        private static void BuildGableRoof(BuildJob job, int cx, int baseRoofY, int halfSpan, ushort roofBlock, ushort trimBlock, ushort atticWall)
-        {
-            for (int step = 0; step <= halfSpan; step++)
-            {
-                int y = baseRoofY - step;
-                int xL = cx - halfSpan + step;
-                int xR = cx + halfSpan - step;
-
-                if (xL == xR)
-                {
-                    // Puncak atap
-                    PlaceBlock(job, xL, y, roofBlock);
-                    PlaceBlock(job, xL, y - 1, trimBlock);
-                    break;
-                }
-
-                // Isi dinding loteng HANYA di bagian dalam antara xL+1 .. xR-1
-                for (int wx = xL + 1; wx <= xR - 1; wx++)
-                {
-                    SetWall(wx, y, atticWall);
-                }
-
-                // Pasang blok atap kiri & kanan lalu miringkan (slope)
-                PlaceBlock(job, xL, y, roofBlock);
-                SetSlope(xL, y, 2); // Miring ke kiri atas
-
-                PlaceBlock(job, xR, y, roofBlock);
-                SetSlope(xR, y, 1); // Miring ke kanan atas
-
-                // Tambah blok penguat tepat di bawah genteng miring agar tidak bolong diagonal
-                if (xL + 1 < xR)
-                    PlaceBlock(job, xL + 1, y, trimBlock);
-                if (xR - 1 > xL + 1)
-                    PlaceBlock(job, xR - 1, y, trimBlock);
-            }
         }
 
         private static void PlaceHouseDoor(BuildJob job, int x, int bottomY, int doorStyle)
