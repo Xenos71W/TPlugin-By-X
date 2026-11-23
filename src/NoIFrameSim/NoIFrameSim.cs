@@ -11,9 +11,17 @@ namespace NoIFrameSim;
 public class NoIFrameSim : TerrariaPlugin
 {
     public override string Name => "NoIFrameSim";
-    public override Version Version => new Version(1, 0, 0);
+    public override Version Version => new Version(1, 1, 0);
     public override string Author => "Custom";
-    public override string Description => "Memberikan damage susulan beruntun saat pemain menempel dengan musuh";
+    public override string Description => "Memberikan damage susulan super cepat menembus i-frame pemain";
+
+    // === PENGATURAN KECEPATAN & DAMAGE ===
+    // Jeda antar hit dalam milidetik (150ms = ~6-7 hit per detik, 50ms = 20 hit per detik)
+    private const int IntervalMs = 150;
+    // Pengali damage susulan dari hit awal (0.5 = 50% damage awal, 1.0 = 100% full damage)
+    private const double DamageMultiplier = 0.5;
+    // Batas maksimal durasi loop (9000ms = 9 detik) agar aman dari memory leak
+    private const int MaxDurationMs = 9000;
 
     private readonly ConcurrentDictionary<int, bool> _activeTracking = new();
 
@@ -39,23 +47,24 @@ public class NoIFrameSim : TerrariaPlugin
         if (player == null || !player.Active || player.Dead || args.PVP)
             return;
 
-        // Cegah loop ganda kalau pemain sudah masuk daftar pantauan
         if (!_activeTracking.TryAdd(player.Index, true))
             return;
 
-        // Damage susulan diambil dari setengah damage pukulan awal (minimal 10)
-        int tickDamage = Math.Max(10, args.Damage / 2);
-        _ = TrackContactDamageAsync(player, tickDamage);
+        int tickDamage = Math.Max(5, (int)(args.Damage * DamageMultiplier));
+        _ = TrackFastDamageAsync(player, tickDamage);
     }
 
-    private async Task TrackContactDamageAsync(TSPlayer player, int tickDamage)
+    private async Task TrackFastDamageAsync(TSPlayer player, int tickDamage)
     {
         try
         {
-            for (int i = 0; i < 15; i++)
+            int maxIterations = MaxDurationMs / IntervalMs;
+            int elapsedSinceAnim = 0;
+
+            for (int i = 0; i < maxIterations; i++)
             {
-                // Jeda 700ms (pas melewati 40-tick i-frame bawaan client)
-                await Task.Delay(700);
+                await Task.Delay(IntervalMs);
+                elapsedSinceAnim += IntervalMs;
 
                 if (player == null || !player.Active || player.Dead || player.TPlayer == null)
                     break;
@@ -78,7 +87,27 @@ public class NoIFrameSim : TerrariaPlugin
                 if (!stillTouchingEnemy)
                     break;
 
-                player.DamagePlayer(tickDamage);
+                // Jika sudah lewat 700ms (i-frame client habis), pakai DamagePlayer biar keluar suara & angka merah
+                if (elapsedSinceAnim >= 700)
+                {
+                    elapsedSinceAnim = 0;
+                    player.DamagePlayer(tickDamage);
+                }
+                else
+                {
+                    // Tembus i-frame client dengan memotong statLife langsung & sync paket darah
+                    player.TPlayer.statLife -= tickDamage;
+                    if (player.TPlayer.statLife <= 0)
+                    {
+                        player.TPlayer.statLife = 0;
+                        player.KillPlayer();
+                        break;
+                    }
+                    else
+                    {
+                        TSPlayer.All.SendData(PacketTypes.PlayerHp, "", player.Index);
+                    }
+                }
             }
         }
         finally
