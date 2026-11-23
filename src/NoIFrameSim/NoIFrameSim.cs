@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Concurrent;
+using System.Reflection;
 using System.Threading.Tasks;
 using Terraria;
+using Terraria.DataStructures;
 using TerrariaApi.Server;
 using TShockAPI;
 
@@ -11,17 +13,19 @@ namespace NoIFrameSim;
 public class NoIFrameSim : TerrariaPlugin
 {
     public override string Name => "NoIFrameSim";
-    public override Version Version => new Version(1, 1, 0);
+    public override Version Version => new Version(1, 2, 0);
     public override string Author => "Custom";
-    public override string Description => "Memberikan damage susulan super cepat menembus i-frame pemain";
+    public override string Description => "Bypass i-frame pemain menggunakan rotasi slot hurtCooldowns";
 
     // === PENGATURAN KECEPATAN & DAMAGE ===
-    // Jeda antar hit dalam milidetik (150ms = ~6-7 hit per detik, 50ms = 20 hit per detik)
+    // 150ms = ~6.7 hit per detik (pas buat rotasi 5 slot cooldown Terraria)
     private const int IntervalMs = 150;
-    // Pengali damage susulan dari hit awal (0.5 = 50% damage awal, 1.0 = 100% full damage)
-    private const double DamageMultiplier = 0.5;
-    // Batas maksimal durasi loop (9000ms = 9 detik) agar aman dari memory leak
+    // 1.0 = 100% full damage musuh di setiap tick (naikkan ke 1.5 atau 2.0 kalau mau lebih sadis)
+    private const double DamageMultiplier = 1.0;
     private const int MaxDurationMs = 9000;
+
+    private static readonly MethodInfo? SendPlayerHurtMethod =
+        typeof(NetMessage).GetMethod("SendPlayerHurt", BindingFlags.Public | BindingFlags.Static);
 
     private readonly ConcurrentDictionary<int, bool> _activeTracking = new();
 
@@ -50,69 +54,87 @@ public class NoIFrameSim : TerrariaPlugin
         if (!_activeTracking.TryAdd(player.Index, true))
             return;
 
-        int tickDamage = Math.Max(5, (int)(args.Damage * DamageMultiplier));
-        _ = TrackFastDamageAsync(player, tickDamage);
+        int tickDamage = Math.Max(10, (int)(args.Damage * DamageMultiplier));
+        _ = TrackBrutalDamageAsync(player, tickDamage);
     }
 
-    private async Task TrackFastDamageAsync(TSPlayer player, int tickDamage)
+    private async Task TrackBrutalDamageAsync(TSPlayer player, int tickDamage)
     {
         try
         {
             int maxIterations = MaxDurationMs / IntervalMs;
-            int elapsedSinceAnim = 0;
+            int cooldownSlot = 0;
 
             for (int i = 0; i < maxIterations; i++)
             {
                 await Task.Delay(IntervalMs);
-                elapsedSinceAnim += IntervalMs;
 
                 if (player == null || !player.Active || player.Dead || player.TPlayer == null)
                     break;
 
-                bool stillTouchingEnemy = false;
-                for (int n = 0; n < Main.maxNPCs; n++)
-                {
-                    NPC npc = Main.npc[n];
-                    if (npc != null && npc.active && !npc.friendly && npc.damage > 0 && !npc.dontTakeDamage)
-                    {
-                        if (player.TPlayer.Hitbox.Intersects(npc.Hitbox) ||
-                            player.TPlayer.Distance(npc.Center) < 56f)
-                        {
-                            stillTouchingEnemy = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (!stillTouchingEnemy)
+                if (!IsTouchingDanger(player.TPlayer))
                     break;
 
-                // Jika sudah lewat 700ms (i-frame client habis), pakai DamagePlayer biar keluar suara & angka merah
-                if (elapsedSinceAnim >= 700)
-                {
-                    elapsedSinceAnim = 0;
-                    player.DamagePlayer(tickDamage);
-                }
-                else
-                {
-                    // Tembus i-frame client dengan memotong statLife langsung & sync paket darah
-                    player.TPlayer.statLife -= tickDamage;
-                    if (player.TPlayer.statLife <= 0)
-                    {
-                        player.TPlayer.statLife = 0;
-                        player.KillPlayer();
-                        break;
-                    }
-                    else
-                    {
-                        TSPlayer.All.SendData(PacketTypes.PlayerHp, "", player.Index);
-                    }
-                }
+                ApplyRealHit(player, tickDamage, cooldownSlot);
+                cooldownSlot = (cooldownSlot + 1) % 5;
             }
         }
         finally
         {
             _activeTracking.TryRemove(player.Index, out _);
         }
+    }
+
+    private static bool IsTouchingDanger(Player tPlayer)
+    {
+        for (int n = 0; n < Main.maxNPCs; n++)
+        {
+            NPC npc = Main.npc[n];
+            if (npc != null && npc.active && !npc.friendly && npc.damage > 0 && !npc.dontTakeDamage)
+            {
+                if (tPlayer.Hitbox.Intersects(npc.Hitbox) || tPlayer.Distance(npc.Center) < 64f)
+                    return true;
+            }
+        }
+
+        for (int p = 0; p < Main.maxProjectiles; p++)
+        {
+            Projectile proj = Main.projectile[p];
+            if (proj != null && proj.active && proj.hostile && proj.damage > 0)
+            {
+                if (tPlayer.Hitbox.Intersects(proj.Hitbox))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void ApplyRealHit(TSPlayer player, int damage, int cooldownSlot)
+    {
+        if (SendPlayerHurtMethod != null)
+        {
+            var parameters = SendPlayerHurtMethod.GetParameters();
+            object?[] invokeArgs = new object?[parameters.Length];
+
+            if (parameters.Length > 0) invokeArgs[0] = player.Index;
+            if (parameters.Length > 1) invokeArgs[1] = PlayerDeathReason.LegacyDefault();
+            if (parameters.Length > 2) invokeArgs[2] = damage;
+            if (parameters.Length > 3) invokeArgs[3] = 0;
+            if (parameters.Length > 4) invokeArgs[4] = false;
+            if (parameters.Length > 5) invokeArgs[5] = false;
+            if (parameters.Length > 6) invokeArgs[6] = 0;
+            if (parameters.Length > 7) invokeArgs[7] = cooldownSlot;
+
+            for (int p = 8; p < parameters.Length; p++)
+            {
+                invokeArgs[p] = parameters[p].HasDefaultValue ? parameters[p].DefaultValue : 0;
+            }
+
+            SendPlayerHurtMethod.Invoke(null, invokeArgs);
+            return;
+        }
+
+        player.DamagePlayer(damage);
     }
 }
