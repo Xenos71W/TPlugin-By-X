@@ -1,40 +1,94 @@
-name: Build
+name: Build All TShock Plugins
 
 on:
   push:
     branches: [ main, master ]
-  pull_request:
+    tags-ignore:
+      - 'V1.0.0.0'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Setup .NET 9
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 9.0.x
+          dotnet-version: '9.0.x'
 
-      - name: List project files
-        run: find . -name '*.csproj' -not -path './.git/*'
-
-      - name: Build all plugins
+      - name: Compile file bahasa i18n (jika ada)
+        shell: pwsh
         run: |
-          set -e
-          find . -name '*.csproj' -not -path './.git/*' | while read -r proj; do
-            echo "=== Building $proj ==="
-            dotnet build "$proj" -c Release
-          done
+          $poFiles = Get-ChildItem -Path "src" -Filter "*.po" -Recurse -ErrorAction SilentlyContinue
+          if ($poFiles) {
+            sudo apt-get update && sudo apt-get install -y gettext
+            foreach ($p in $poFiles) {
+              $moPath = [System.IO.Path]::ChangeExtension($p.FullName, ".mo")
+              msgfmt -o "$moPath" "$($p.FullName)"
+            }
+          }
 
-      - name: Upload plugin DLLs
+      - name: Build semua plugin di folder src
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "out/Plugins" | Out-Null
+          $projects = Get-ChildItem -Path "src" -Filter "*.csproj" -Recurse
+
+          if (-not $projects) {
+            Write-Error "Tidak ada file .csproj ditemukan di dalam folder src!"
+            exit 1
+          }
+
+          foreach ($proj in $projects) {
+            Write-Host "=== Building $($proj.BaseName) ==="
+            dotnet build $proj.FullName -c Release -o "out/temp/$($proj.BaseName)"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            $dll = Get-ChildItem -Path "out/temp/$($proj.BaseName)" -Filter "$($proj.BaseName).dll" | Select-Object -First 1
+            if (-not $dll) {
+              $dll = Get-ChildItem -Path "out/temp/$($proj.BaseName)" -Filter "*.dll" | Where-Object {
+                $_.Name -notmatch '^(System\.|Microsoft\.|TShockAPI|OTAPI|TerrariaServer|Newtonsoft|ModFramework|HttpServer|BCrypt|MySql|Microsoft\.Data)'
+              } | Select-Object -First 1
+            }
+
+            if ($dll) {
+              Copy-Item $dll.FullName -Destination "out/Plugins/" -Force
+            }
+          }
+
+          Compress-Archive -Path "out/Plugins/*" -DestinationPath "out/AllPlugins.zip" -Force
+
+      - name: Upload ke Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: plugins
-          path: |
-            **/bin/Release/net9.0/BossFocus.dll
-            **/bin/Release/net9.0/MagicBuilder.dll
-          if-no-files-found: error
+          name: TShock-Plugins
+          path: out/Plugins/*.dll
+
+      - name: Update Tag Release
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f V1.0.0.0
+          git push -f origin V1.0.0.0
+
+      - name: Publish ke halaman Releases
+        uses: ncipollo/release-action@v1
+        with:
+          tag: V1.0.0.0
+          name: "Latest Plugins Build"
+          body: |
+            Update otomatis seluruh file `.dll` hasil compile dari folder `src/`.
+            Download `AllPlugins.zip` atau pilih file `.dll` satuan di bawah ini.
+          artifacts: |
+            out/AllPlugins.zip
+            out/Plugins/*.dll
+          allowUpdates: true
+          removeArtifacts: true
+          
