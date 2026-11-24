@@ -37,11 +37,11 @@ public class NoIFrameSim : TerrariaPlugin
     private const int DebuffDurationTicks = 25;
 
     // Tumpukan 9 debuff DoT (~180+ HP/detik di luar damage fisik):
-    // 39 = Cursed Inferno, 144 = Electrified, 68 = Suffocation, 67 = Burning,
+    // 39 = Cursed Inferno, 144 = Electrified, 68 = Suffocation, 323 = Hellfire,
     // 189 = Daybreak, 324 = Frostbite, 153 = Shadowflame, 70 = Acid Venom, 204 = Oiled
     private static readonly int[] DotDebuffIds =
     {
-        39, 144, 68, 67, 189, 324, 153, 70, 204
+        39, 144, 68, 323, 189, 324, 153, 70, 204
     };
 
     // 6 jalur slot terpisah di Terraria (-1 = global immune, 0..4 = hurtCooldowns)
