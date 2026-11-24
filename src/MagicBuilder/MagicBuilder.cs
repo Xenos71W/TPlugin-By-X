@@ -14,7 +14,7 @@ namespace MagicBuilder
     {
         public override string Name => "MagicBuilder";
         public override string Author => "You";
-        public override Version Version => new Version(1, 3, 1, 0);
+        public override Version Version => new Version(1, 3, 2, 0);
         public override string Description => "Pilih titik pakai Ice Rod dan bangun struktur otomatis.";
 
         private const string UsePermission = "magicbuilder.use";
@@ -29,6 +29,7 @@ namespace MagicBuilder
         private const int MaxPoints = 8;
         private const int DemolitionistShopIndex = 4;
         private const int ShopSyncIntervalTicks = 10;
+        private const int ShopOverridePacketId = 104;
 
         // --- Hellevator (TIDAK DIUBAH) ---
         private const ushort BrickTileType = 38;
@@ -460,14 +461,18 @@ namespace MagicBuilder
             int emptySlot = 15;
             try
             {
-                Chest shop = new Chest(true);
+                Chest shop = new Chest();
                 shop.SetupShop(DemolitionistShopIndex);
-                for (int s = 0; s < 40; s++)
+                if (shop.item != null)
                 {
-                    if (shop.item[s] == null || shop.item[s].type == 0 || shop.item[s].IsAir)
+                    int maxSlots = Math.Min(40, shop.item.Length);
+                    for (int s = 0; s < maxSlots; s++)
                     {
-                        emptySlot = s;
-                        break;
+                        if (shop.item[s] == null || shop.item[s].type == 0 || shop.item[s].IsAir)
+                        {
+                            emptySlot = s;
+                            break;
+                        }
                     }
                 }
             }
@@ -489,7 +494,7 @@ namespace MagicBuilder
                 NPC npc = Main.npc[tp.talkNPC];
                 if (npc != null && npc.active && npc.type == NPCID.Demolitionist)
                 {
-                    p.SendData(PacketTypes.ShopOverride, "", DemolitionistShopIndex, emptySlot, IceRodItemType, 1, _iceRodPrice);
+                    p.SendData((PacketTypes)ShopOverridePacketId, "", DemolitionistShopIndex, emptySlot, IceRodItemType, 1, _iceRodPrice);
                 }
             }
         }
