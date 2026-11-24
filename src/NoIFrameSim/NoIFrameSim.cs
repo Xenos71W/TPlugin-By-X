@@ -1,8 +1,10 @@
 using System;
-using System.Collections.Concurrent;
+using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Xna.Framework;
 using Terraria;
-using Terraria.ID;
+using Terraria.DataStructures;
 using TerrariaApi.Server;
 using TShockAPI;
 
@@ -12,134 +14,166 @@ namespace NoIFrameSim;
 public class NoIFrameSim : TerrariaPlugin
 {
     public override string Name => "NoIFrameSim";
-    public override Version Version => new Version(1, 3, 0);
+    public override Version Version => new Version(2, 1, 0);
     public override string Author => "Custom";
-    public override string Description => "Memberikan efek DoT mengalir seperti Cursed Inferno & Suffocation saat menempel musuh";
+    public override string Description => "Menghilangkan i-frame pemain menggunakan rotasi 5 slot hurtCooldowns dengan damage asli musuh";
 
-    // === PENGATURAN INTENSITAS BOCOR DARAH ===
-    // 0 = Otomatis menyesuaikan damage musuh (Early game ringan, Bos Hardmode brutal)
-    // 1 = Ringan (~25 HP/detik)
-    // 2 = Sedang (~65 HP/detik)
-    // 3 = Brutal Maksimal (~115+ HP/detik, tembus Ankh Shield)
-    private const int ForceTier = 0;
+    // === PENGATURAN KECEPATAN & PENGALI DAMAGE ===
+    // 140ms x 5 slot = 700ms (pas melewati 667ms cooldown per slot Terraria)
+    private const int IntervalMs = 140;
+    // 1.0 = 100% damage asli musuh/proyektil (ubah ke 1.5 atau 2.0 kalau mau lebih pedih)
+    private const double DamageMultiplier = 1.0;
 
-    // Durasi debuff dalam tick (60 tick = 1 detik). 35 tick = ~0.58 detik setelah lepas dari musuh langsung hilang
-    private const int DebuffDurationTicks = 35;
-    private const int CheckIntervalMs = 200;
-    private const int MaxDurationMs = 15000;
+    private static readonly MethodInfo? SendPlayerHurtMethod =
+        typeof(NetMessage).GetMethod("SendPlayerHurt", BindingFlags.Public | BindingFlags.Static);
 
-    private readonly ConcurrentDictionary<int, bool> _activeTracking = new();
+    // Menyimpan jumlah tick berturut-turut pemain menyentuh bahaya & rotasi slot per pemain
+    private readonly int[] _contactTicks = new int[Main.maxPlayers];
+    private readonly int[] _slotRotation = new int[Main.maxPlayers];
+
+    private CancellationTokenSource? _cts;
 
     public NoIFrameSim(Main game) : base(game) { }
 
     public override void Initialize()
     {
-        GetDataHandlers.PlayerDamage += OnPlayerDamage;
+        _cts = new CancellationTokenSource();
+        _ = MonitorRealDamageLoopAsync(_cts.Token);
     }
 
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
-            GetDataHandlers.PlayerDamage -= OnPlayerDamage;
+            _cts?.Cancel();
+            _cts?.Dispose();
         }
         base.Dispose(disposing);
     }
 
-    private void OnPlayerDamage(object? sender, GetDataHandlers.PlayerDamageEventArgs args)
+    private async Task MonitorRealDamageLoopAsync(CancellationToken token)
     {
-        TSPlayer player = args.Player;
-        if (player == null || !player.Active || player.Dead || args.PVP)
-            return;
-
-        int tier = DetermineTier(args.Damage);
-        ApplyFlowingDebuffs(player, tier);
-
-        if (!_activeTracking.TryAdd(player.Index, true))
-            return;
-
-        _ = TrackContactDebuffAsync(player, tier);
-    }
-
-    private static int DetermineTier(int hitDamage)
-    {
-        if (ForceTier is >= 1 and <= 3)
-            return ForceTier;
-
-        if (hitDamage >= 100) return 3;
-        if (hitDamage >= 45) return 2;
-        return 1;
-    }
-
-    private async Task TrackContactDebuffAsync(TSPlayer player, int tier)
-    {
-        try
+        while (!token.IsCancellationRequested)
         {
-            int maxIterations = MaxDurationMs / CheckIntervalMs;
-
-            for (int i = 0; i < maxIterations; i++)
+            try
             {
-                await Task.Delay(CheckIntervalMs);
+                await Task.Delay(IntervalMs, token);
 
-                if (player == null || !player.Active || player.Dead || player.TPlayer == null)
-                    break;
+                var players = TShock.Players;
+                if (players == null) continue;
 
-                if (!IsTouchingDanger(player.TPlayer))
-                    break;
+                for (int i = 0; i < players.Length; i++)
+                {
+                    TSPlayer? player = players[i];
+                    if (player == null || !player.Active || player.Dead || player.TPlayer == null ||
+                        player.GodMode || player.TPlayer.creativeGodMode)
+                    {
+                        if (i < _contactTicks.Length) _contactTicks[i] = 0;
+                        continue;
+                    }
 
-                ApplyFlowingDebuffs(player, tier);
+                    if (TryGetTouchingThreat(player.TPlayer, out int rawDamage, out PlayerDeathReason reason, out int hitDir))
+                    {
+                        // Lewati tick ke-0 karena hit pertama sudah ditangani otomatis oleh game di HP pemain
+                        if (_contactTicks[i] == 0)
+                        {
+                            _contactTicks[i] = 1;
+                            continue;
+                        }
+
+                        _contactTicks[i]++;
+                        int finalDamage = Math.Max(1, (int)(rawDamage * DamageMultiplier));
+                        int slot = _slotRotation[i];
+                        _slotRotation[i] = (slot + 1) % 5;
+
+                        SendSlotHurt(player, reason, finalDamage, hitDir, slot);
+                    }
+                    else
+                    {
+                        _contactTicks[i] = 0;
+                    }
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                break;
+            }
+            catch
+            {
+                // Abaikan error sesaat jika ada entity despawn di tengah pengecekan
             }
         }
-        finally
-        {
-            _activeTracking.TryRemove(player.Index, out _);
-        }
     }
 
-    private static void ApplyFlowingDebuffs(TSPlayer player, int tier)
+    private static bool TryGetTouchingThreat(Player tPlayer, out int highestDamage, out PlayerDeathReason reason, out int hitDirection)
     {
-        // Tier 1: Cursed Inferno + Electrified (darah mengalir halus)
-        player.SetBuff(BuffID.CursedInferno, DebuffDurationTicks);
-        player.SetBuff(BuffID.Electrified, DebuffDurationTicks);
+        highestDamage = 0;
+        reason = PlayerDeathReason.LegacyDefault();
+        hitDirection = 0;
 
-        // Tier 2: Tambah Suffocation + Oiled (mempercepat DoT api secara drastis)
-        if (tier >= 2)
-        {
-            player.SetBuff(BuffID.Suffocation, DebuffDurationTicks);
-            player.SetBuff(BuffID.Oiled, DebuffDurationTicks);
-        }
+        Rectangle playerBox = tPlayer.Hitbox;
 
-        // Tier 3: Tambah Daybreak + Acid Venom + Burning (bocor super deras)
-        if (tier >= 3)
-        {
-            player.SetBuff(BuffID.Daybreak, DebuffDurationTicks);
-            player.SetBuff(BuffID.Venom, DebuffDurationTicks);
-            player.SetBuff(BuffID.Burning, DebuffDurationTicks);
-        }
-    }
-
-    private static bool IsTouchingDanger(Player tPlayer)
-    {
-        for (int n = 0; n < Main.maxNPCs; n++)
+        // 1. Cek sentuhan langsung dengan monster / bos
+        for (int n = 0; n < Main.npc.Length; n++)
         {
             NPC npc = Main.npc[n];
             if (npc != null && npc.active && !npc.friendly && npc.damage > 0 && !npc.dontTakeDamage)
             {
-                if (tPlayer.Hitbox.Intersects(npc.Hitbox) || tPlayer.Distance(npc.Center) < 60f)
-                    return true;
+                if (playerBox.Intersects(npc.Hitbox) && npc.damage > highestDamage)
+                {
+                    highestDamage = npc.damage;
+                    reason = PlayerDeathReason.ByNPC(n);
+                    hitDirection = tPlayer.Center.X < npc.Center.X ? -1 : 1;
+                }
             }
         }
 
-        for (int p = 0; p < Main.maxProjectiles; p++)
+        // 2. Cek sentuhan dengan proyektil musuh (laser, bola api, dll.)
+        // Di Terraria, damage proyektil musuh di server dikali 2 (Normal), 4 (Expert), atau 6 (Master)
+        int projDifficultyMult = Main.masterMode ? 6 : (Main.expertMode ? 4 : 2);
+
+        for (int p = 0; p < Main.projectile.Length; p++)
         {
             Projectile proj = Main.projectile[p];
             if (proj != null && proj.active && proj.hostile && proj.damage > 0)
             {
-                if (tPlayer.Hitbox.Intersects(proj.Hitbox))
-                    return true;
+                int scaledProjDamage = proj.damage * projDifficultyMult;
+                if (playerBox.Intersects(proj.Hitbox) && scaledProjDamage > highestDamage)
+                {
+                    highestDamage = scaledProjDamage;
+                    reason = PlayerDeathReason.ByProjectile(-1, p);
+                    hitDirection = tPlayer.Center.X < proj.Center.X ? -1 : 1;
+                }
             }
         }
 
-        return false;
+        return highestDamage > 0;
+    }
+
+    private static void SendSlotHurt(TSPlayer player, PlayerDeathReason reason, int damage, int hitDirection, int cooldownSlot)
+    {
+        if (SendPlayerHurtMethod != null)
+        {
+            var parameters = SendPlayerHurtMethod.GetParameters();
+            object?[] invokeArgs = new object?[parameters.Length];
+
+            // Urutan parameter resmi Terraria NetMessage.SendPlayerHurt:
+            // [0] playerTargetIndex, [1] reason, [2] damage, [3] direction,
+            // [4] critical, [5] pvp, [6] cooldownCounter (0..4), [7] remoteClient (-1), [8] ignoreClient (-1)
+            if (parameters.Length > 0) invokeArgs[0] = player.Index;
+            if (parameters.Length > 1) invokeArgs[1] = reason;
+            if (parameters.Length > 2) invokeArgs[2] = damage;
+            if (parameters.Length > 3) invokeArgs[3] = hitDirection;
+            if (parameters.Length > 4) invokeArgs[4] = false;
+            if (parameters.Length > 5) invokeArgs[5] = false;
+            if (parameters.Length > 6) invokeArgs[6] = cooldownSlot;
+            if (parameters.Length > 7) invokeArgs[7] = -1;
+            if (parameters.Length > 8) invokeArgs[8] = -1;
+
+            SendPlayerHurtMethod.Invoke(null, invokeArgs);
+            return;
+        }
+
+        player.DamagePlayer(damage);
     }
 }
