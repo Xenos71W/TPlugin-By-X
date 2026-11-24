@@ -14,19 +14,21 @@ namespace MagicBuilder
     {
         public override string Name => "MagicBuilder";
         public override string Author => "You";
-        public override Version Version => new Version(1, 3, 0, 0);
+        public override Version Version => new Version(1, 3, 1, 0);
         public override string Description => "Pilih titik pakai Ice Rod dan bangun struktur otomatis.";
 
         private const string UsePermission = "magicbuilder.use";
         private const string BuildPermission = "magicbuilder.build";
         private const string DebugPermission = "magicbuilder.debug";
 
-        // --- Pemilih titik ---
+        // --- Pemilih titik & Toko Demolitionist ---
         private const int IceRodItemType = 496;
         private const int IceBlockProjectile = 80;
         private const int IceBlockTileType = 127;
         private const ushort MarkerTileType = 8;
         private const int MaxPoints = 8;
+        private const int DemolitionistShopIndex = 4;
+        private const int ShopSyncIntervalTicks = 10;
 
         // --- Hellevator (TIDAK DIUBAH) ---
         private const ushort BrickTileType = 38;
@@ -205,6 +207,8 @@ namespace MagicBuilder
         private readonly HashSet<int> _debug = new HashSet<int>();
         private readonly object _lock = new object();
         private string _logPath;
+        private int _shopSyncTick;
+        private int _iceRodPrice = -1;
 
         public MagicBuilderPlugin(Main game) : base(game) { }
 
@@ -414,7 +418,84 @@ namespace MagicBuilder
         }
 
         // ---------------------------------------------------------------
-        // Preview Sistem (Client-side sementara sebelum /build confirm)
+        // Toko Demolitionist: tambah Ice Rod di slot kosong tanpa menimpa item lain
+        // ---------------------------------------------------------------
+
+        private void SyncDemolitionistShop()
+        {
+            _shopSyncTick++;
+            if (_shopSyncTick < ShopSyncIntervalTicks)
+                return;
+            _shopSyncTick = 0;
+
+            bool anyTalking = false;
+            for (int i = 0; i < Main.maxPlayers; i++)
+            {
+                TSPlayer p = TShock.Players[i];
+                if (p == null || !p.Active || !p.RealPlayer)
+                    continue;
+
+                Player tp = p.TPlayer;
+                if (tp == null || tp.talkNPC < 0 || tp.talkNPC >= Main.maxNPCs)
+                    continue;
+
+                NPC npc = Main.npc[tp.talkNPC];
+                if (npc != null && npc.active && npc.type == NPCID.Demolitionist)
+                {
+                    anyTalking = true;
+                    break;
+                }
+            }
+
+            if (!anyTalking)
+                return;
+
+            if (_iceRodPrice < 0)
+            {
+                Item temp = new Item();
+                temp.SetDefaults(IceRodItemType);
+                _iceRodPrice = temp.value;
+            }
+
+            int emptySlot = 15;
+            try
+            {
+                Chest shop = new Chest(true);
+                shop.SetupShop(DemolitionistShopIndex);
+                for (int s = 0; s < 40; s++)
+                {
+                    if (shop.item[s] == null || shop.item[s].type == 0 || shop.item[s].IsAir)
+                    {
+                        emptySlot = s;
+                        break;
+                    }
+                }
+            }
+            catch
+            {
+                emptySlot = 15;
+            }
+
+            for (int i = 0; i < Main.maxPlayers; i++)
+            {
+                TSPlayer p = TShock.Players[i];
+                if (p == null || !p.Active || !p.RealPlayer)
+                    continue;
+
+                Player tp = p.TPlayer;
+                if (tp == null || tp.talkNPC < 0 || tp.talkNPC >= Main.maxNPCs)
+                    continue;
+
+                NPC npc = Main.npc[tp.talkNPC];
+                if (npc != null && npc.active && npc.type == NPCID.Demolitionist)
+                {
+                    p.SendData(PacketTypes.ShopOverride, "", DemolitionistShopIndex, emptySlot, IceRodItemType, 1, _iceRodPrice);
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // Preview Sistem (Client-side sementara sebelum /build confirm - TIDAK DIUBAH)
         // ---------------------------------------------------------------
 
         private static void ClearPreviewBoxes(TSPlayer player, List<PreviewBox> boxes)
@@ -568,7 +649,6 @@ namespace MagicBuilder
             TileBackup[,] backup = CaptureBackup(x0, y0, w, h);
             try
             {
-                // Anchor tali di (cx, sy - 1)
                 SetPreviewBlock(cx, sy - 1, BrickTileType);
 
                 for (int y = sy; y <= ey; y++)
@@ -663,7 +743,6 @@ namespace MagicBuilder
                         SetPreviewPlatform(x, tierY, st.Platform);
                 }
 
-                // Penanda lokasi cluster buff station di setiap tingkat platform
                 foreach (int tierY in a.TierYs)
                 {
                     foreach (int bx in buffCenters)
@@ -998,7 +1077,8 @@ namespace MagicBuilder
 
         private void OnGameUpdate(EventArgs args)
         {
-            // Bersihkan preview otomatis jika waktu konfirmasi 60 detik sudah habis
+            SyncDemolitionistShop();
+
             List<(int PlayerIndex, List<PreviewBox> Boxes)> expiredPreviews = null;
             DateTime now = DateTime.UtcNow;
             lock (_lock)
