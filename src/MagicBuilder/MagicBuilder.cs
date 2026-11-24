@@ -14,7 +14,7 @@ namespace MagicBuilder
     {
         public override string Name => "MagicBuilder";
         public override string Author => "You";
-        public override Version Version => new Version(1, 1, 0, 0);
+        public override Version Version => new Version(1, 1, 1, 0);
         public override string Description => "Pilih titik pakai Ice Rod dan bangun struktur otomatis.";
 
         private const string UsePermission = "magicbuilder.use";
@@ -52,11 +52,8 @@ namespace MagicBuilder
         private const int ArenaBuffInterval = 70;
         private const int ArenaTorchInterval = 14;
 
-        private const ushort AsphaltTileType = 226;
-        private const ushort CampfireTileType = 215;
-        private const ushort HeartLanternTileType = 372;
-        private const ushort StarInBottleTileType = 373;
-        private const ushort BastStatueTileType = 506;
+        private const int StarInBottleStyle = 7;
+        private const int HeartLanternStyle = 9;
 
         private static readonly HashSet<int> DebugPackets = new HashSet<int> { 17, 27, 29 };
 
@@ -836,7 +833,6 @@ namespace MagicBuilder
                 tierYs.Add(bottomY - (t * spacing));
             }
 
-            // Ruang bersih 4 tile di atas platform tertinggi untuk Bast Statue & lompatan
             int topY = tierYs[tierYs.Count - 1] - 4;
 
             if (leftX < 5 || rightX >= Main.maxTilesX - 5 || topY < 5 || bottomY >= Main.maxTilesY - 5)
@@ -910,7 +906,6 @@ namespace MagicBuilder
         {
             ArenaSpec a = job.Arena;
             HouseStyle st = job.Style;
-            List<int> buffCenters = GetArenaBuffCenters(a);
 
             int xStart = job.NextX;
             int cols = 0;
@@ -925,26 +920,11 @@ namespace MagicBuilder
 
                 // Lantai paling bawah: Asphalt jika Hardmode + >=1 Mech Boss, selain itu biarkan blok asli
                 if (a.UseAsphalt)
-                    PlaceBlock(job, x, a.BottomY, AsphaltTileType);
+                    PlaceBlock(job, x, a.BottomY, TileID.Asphalt);
 
-                // Pasang tiap tingkat platform (dengan blok solid 1 tile di bx-3 & bx+3 sebagai gantungan Heart Lantern & Star in a Bottle)
-                bool isLanternAnchor = false;
-                foreach (int bx in buffCenters)
-                {
-                    if (x == bx - 3 || x == bx + 3)
-                    {
-                        isLanternAnchor = true;
-                        break;
-                    }
-                }
-
+                // Pasang platform murni di setiap tingkat (tanpa blok solid)
                 foreach (int tierY in a.TierYs)
-                {
-                    if (isLanternAnchor)
-                        PlaceBlock(job, x, tierY, st.Block);
-                    else
-                        PlacePlatform(job, x, tierY, st.Platform);
-                }
+                    PlacePlatform(job, x, tierY, st.Platform);
 
                 job.NextX++;
                 cols++;
@@ -959,7 +939,8 @@ namespace MagicBuilder
             if (job.NextX <= a.RightX)
                 return false;
 
-            // Tahap akhir: pasang Buff Stations & Torch setelah semua platform selesai dibangun
+            // Tahap akhir: pasang Buff Stations & Torch langsung di platform
+            List<int> buffCenters = GetArenaBuffCenters(a);
             PlaceArenaBuffsAndLights(job, buffCenters);
             return true;
         }
@@ -974,10 +955,10 @@ namespace MagicBuilder
             {
                 foreach (int bx in buffCenters)
                 {
-                    if (!WorldGen.PlaceObject(bx, a.BottomY - 1, CampfireTileType, true, st.Campfire))
+                    if (!WorldGen.PlaceObject(bx, a.BottomY - 1, TileID.Campfire, true, st.Campfire))
                         job.ObjectFailed++;
 
-                    if (!WorldGen.PlaceObject(bx + 5, a.BottomY - 1, BastStatueTileType, true))
+                    if (!WorldGen.PlaceObject(bx + 4, a.BottomY - 1, TileID.BastStatue, true))
                         job.ObjectFailed++;
                 }
             }
@@ -988,19 +969,19 @@ namespace MagicBuilder
                 foreach (int bx in buffCenters)
                 {
                     // Campfire duduk di atas platform (bx-1 .. bx+1)
-                    if (!WorldGen.PlaceObject(bx, tierY - 1, CampfireTileType, true, st.Campfire))
+                    if (!WorldGen.PlaceObject(bx, tierY - 1, TileID.Campfire, true, st.Campfire))
                         job.ObjectFailed++;
 
-                    // Bast Statue duduk di atas platform (bx+5 .. bx+6)
-                    if (!WorldGen.PlaceObject(bx + 5, tierY - 1, BastStatueTileType, true))
+                    // Bast Statue duduk di atas platform (bx+4 .. bx+5)
+                    if (!WorldGen.PlaceObject(bx + 4, tierY - 1, TileID.BastStatue, true))
                         job.ObjectFailed++;
 
-                    // Heart Lantern menggantung di bawah blok solid (bx-3, tierY)
-                    if (!WorldGen.PlaceObject(bx - 3, tierY + 1, HeartLanternTileType, true))
+                    // Heart Lantern menggantung langsung di bawah platform (bx-3)
+                    if (!WorldGen.PlaceObject(bx - 3, tierY + 1, TileID.HangingLanterns, true, HeartLanternStyle))
                         job.ObjectFailed++;
 
-                    // Star in a Bottle menggantung di bawah blok solid (bx+3, tierY)
-                    if (!WorldGen.PlaceObject(bx + 3, tierY + 1, StarInBottleTileType, true))
+                    // Star in a Bottle menggantung langsung di bawah platform (bx+2)
+                    if (!WorldGen.PlaceObject(bx + 2, tierY + 1, TileID.HangingLanterns, true, StarInBottleStyle))
                         job.ObjectFailed++;
                 }
 
@@ -1010,7 +991,7 @@ namespace MagicBuilder
                     bool nearBuff = false;
                     foreach (int bx in buffCenters)
                     {
-                        if (Math.Abs(x - bx) <= 7)
+                        if (Math.Abs(x - bx) <= 6)
                         {
                             nearBuff = true;
                             break;
@@ -1025,17 +1006,15 @@ namespace MagicBuilder
                 }
             }
 
-            // Kirim update rect di sekitar tiap buff cluster dan baris platform
-            foreach (int bx in buffCenters)
-            {
-                int rx = Math.Max(a.LeftX, bx - 4);
-                int rw = Math.Min(a.RightX - rx + 1, 12);
-                SendLargeTileRect(rx, a.TopY, rw, a.BottomY - a.TopY + 1);
-            }
-
+            // Sinkronisasi tampilan seluruh baris platform (atas dan bawah platform)
             foreach (int tierY in a.TierYs)
             {
-                SendLargeTileRect(a.LeftX, tierY - 1, a.RightX - a.LeftX + 1, 2);
+                SendLargeTileRect(a.LeftX, tierY - 2, a.RightX - a.LeftX + 1, 5);
+            }
+
+            if (a.UseAsphalt)
+            {
+                SendLargeTileRect(a.LeftX, a.BottomY - 3, a.RightX - a.LeftX + 1, 4);
             }
         }
 
