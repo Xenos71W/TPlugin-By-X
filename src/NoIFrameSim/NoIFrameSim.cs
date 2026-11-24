@@ -14,27 +14,30 @@ namespace NoIFrameSim;
 public class NoIFrameSim : TerrariaPlugin
 {
     public override string Name => "NoIFrameSim";
-    public override Version Version => new Version(2, 2, 0);
+    public override Version Version => new Version(2, 3, 0);
     public override string Author => "Custom";
-    public override string Description => "Aliran damage maksimal menggunakan rotasi 6 slot immunity + multi-hazard burst";
+    public override string Description => "Aliran damage murni super deras menggunakan burst 6 slot immunity";
 
-    // === PENGATURAN KECEPATAN & KEBOCORAN ===
-    // 115ms x 6 slot = 690ms (batas tercepat yang tetap tembus 667ms cooldown Terraria)
-    private const int IntervalMs = 115;
+    // === PENGATURAN KEBOCORAN DAMAGE MURNI ===
+    // 35ms = memuntahkan seluruh 6 slot dalam 0.21 detik saat bersentuhan
+    private const int IntervalMs = 35;
 
-    // Pengali damage asli musuh (1.0 = 100% asli, 1.5 = 150%, 2.0 = 2x lipat)
+    // 1.0 = 100% damage murni asli musuh/proyektil tanpa tambahan buatan
     private const double DamageMultiplier = 1.0;
 
-    // True = kalau nyentuh badan bos + kena laser bersamaan, kedua damage masuk barengan
-    private const bool EnableMultiHazardBurst = true;
+    // Maksimal slot yang ditembak bersamaan dalam 1 tick jika menyentuh banyak hitbox (bos + laser / segmen cacing)
+    private const int MaxHitsPerTick = 3;
 
-    // 6 jalur slot terpisah di Terraria (-1 = global immune, 0..4 = hurtCooldowns)
+    // Durasi reset tiap slot immunity di Terraria (40 tick = ~667ms)
+    private const long SlotCooldownMs = 670;
+
     private static readonly int[] CooldownSlots = { -1, 0, 1, 2, 3, 4 };
 
     private static readonly MethodInfo? SendPlayerHurtMethod =
         typeof(NetMessage).GetMethod("SendPlayerHurt", BindingFlags.Public | BindingFlags.Static);
 
-    private readonly int[] _slotRotation = new int[Main.maxPlayers];
+    // Menyimpan timestamp kapan masing-masing dari 6 slot kembali terbuka untuk tiap pemain
+    private readonly long[,] _slotUnlockTime = new long[Main.maxPlayers, 6];
     private CancellationTokenSource? _cts;
 
     public NoIFrameSim(Main game) : base(game) { }
@@ -42,7 +45,7 @@ public class NoIFrameSim : TerrariaPlugin
     public override void Initialize()
     {
         _cts = new CancellationTokenSource();
-        _ = MonitorTurboDamageLoopAsync(_cts.Token);
+        _ = MonitorPureBurstLoopAsync(_cts.Token);
     }
 
     protected override void Dispose(bool disposing)
@@ -55,7 +58,7 @@ public class NoIFrameSim : TerrariaPlugin
         base.Dispose(disposing);
     }
 
-    private async Task MonitorTurboDamageLoopAsync(CancellationToken token)
+    private async Task MonitorPureBurstLoopAsync(CancellationToken token)
     {
         while (!token.IsCancellationRequested)
         {
@@ -66,16 +69,19 @@ public class NoIFrameSim : TerrariaPlugin
                 var players = TShock.Players;
                 if (players == null) continue;
 
+                long nowMs = Environment.TickCount64;
+
                 for (int i = 0; i < players.Length; i++)
                 {
                     TSPlayer? player = players[i];
                     if (player == null || !player.Active || player.Dead || player.TPlayer == null ||
                         player.GodMode || player.TPlayer.creativeGodMode)
                     {
+                        ResetPlayerSlots(i);
                         continue;
                     }
 
-                    ProcessPlayerThreats(player, i);
+                    ProcessPlayerContacts(player, i, nowMs);
                 }
             }
             catch (TaskCanceledException)
@@ -84,92 +90,84 @@ public class NoIFrameSim : TerrariaPlugin
             }
             catch
             {
-                // Abaikan error sesaat saat entity despawn
+                // Abaikan error sesaat jika entity despawn di tengah pengecekan
             }
         }
     }
 
-    private void ProcessPlayerThreats(TSPlayer player, int playerIndex)
+    private void ProcessPlayerContacts(TSPlayer player, int playerIndex, long nowMs)
     {
         Player tPlayer = player.TPlayer;
         Rectangle playerBox = tPlayer.Hitbox;
+        int hitsThisTick = 0;
 
-        int bestNpcDamage = 0;
-        int bestNpcIndex = -1;
-        int npcHitDir = 0;
-
-        // 1. Cari monster/bos paling sakit yang sedang bersentuhan
-        for (int n = 0; n < Main.npc.Length; n++)
+        // 1. Cek semua monster / segmen bos yang bersentuhan dengan hitbox pemain
+        for (int n = 0; n < Main.npc.Length && hitsThisTick < MaxHitsPerTick; n++)
         {
             NPC npc = Main.npc[n];
             if (npc != null && npc.active && !npc.friendly && npc.damage > 0 && !npc.dontTakeDamage)
             {
-                if (playerBox.Intersects(npc.Hitbox) && npc.damage > bestNpcDamage)
+                if (playerBox.Intersects(npc.Hitbox))
                 {
-                    bestNpcDamage = npc.damage;
-                    bestNpcIndex = n;
-                    npcHitDir = tPlayer.Center.X < npc.Center.X ? -1 : 1;
+                    if (!TryClaimReadySlot(playerIndex, nowMs, out int slot))
+                        return; // Semua 6 slot sedang cooldown, hentikan loop agar hemat CPU
+
+                    int rawDamage = Math.Max(1, (int)(npc.damage * DamageMultiplier));
+                    int hitDir = tPlayer.Center.X < npc.Center.X ? -1 : 1;
+                    SendSlotHurt(player, PlayerDeathReason.ByNPC(n), rawDamage, hitDir, slot);
+                    hitsThisTick++;
                 }
             }
         }
 
-        int bestProjDamage = 0;
-        int bestProjIndex = -1;
-        int projHitDir = 0;
+        if (hitsThisTick >= MaxHitsPerTick)
+            return;
+
+        // 2. Cek semua proyektil musuh yang bersentuhan dengan hitbox pemain
         int projDifficultyMult = Main.masterMode ? 6 : (Main.expertMode ? 4 : 2);
 
-        // 2. Cari proyektil musuh paling sakit yang sedang bersentuhan
-        for (int p = 0; p < Main.projectile.Length; p++)
+        for (int p = 0; p < Main.projectile.Length && hitsThisTick < MaxHitsPerTick; p++)
         {
             Projectile proj = Main.projectile[p];
             if (proj != null && proj.active && proj.hostile && proj.damage > 0)
             {
-                int scaledDamage = proj.damage * projDifficultyMult;
-                if (playerBox.Intersects(proj.Hitbox) && scaledDamage > bestProjDamage)
+                if (playerBox.Intersects(proj.Hitbox))
                 {
-                    bestProjDamage = scaledDamage;
-                    bestProjIndex = p;
-                    projHitDir = tPlayer.Center.X < proj.Center.X ? -1 : 1;
+                    if (!TryClaimReadySlot(playerIndex, nowMs, out int slot))
+                        return;
+
+                    int rawDamage = Math.Max(1, (int)(proj.damage * projDifficultyMult * DamageMultiplier));
+                    int hitDir = tPlayer.Center.X < proj.Center.X ? -1 : 1;
+                    SendSlotHurt(player, PlayerDeathReason.ByProjectile(-1, p), rawDamage, hitDir, slot);
+                    hitsThisTick++;
                 }
-            }
-        }
-
-        if (bestNpcDamage <= 0 && bestProjDamage <= 0)
-            return;
-
-        if (EnableMultiHazardBurst)
-        {
-            if (bestNpcDamage > 0)
-            {
-                int dmg = Math.Max(1, (int)(bestNpcDamage * DamageMultiplier));
-                SendSlotHurt(player, PlayerDeathReason.ByNPC(bestNpcIndex), dmg, npcHitDir, NextSlot(playerIndex));
-            }
-            if (bestProjDamage > 0)
-            {
-                int dmg = Math.Max(1, (int)(bestProjDamage * DamageMultiplier));
-                SendSlotHurt(player, PlayerDeathReason.ByProjectile(-1, bestProjIndex), dmg, projHitDir, NextSlot(playerIndex));
-            }
-        }
-        else
-        {
-            if (bestNpcDamage >= bestProjDamage)
-            {
-                int dmg = Math.Max(1, (int)(bestNpcDamage * DamageMultiplier));
-                SendSlotHurt(player, PlayerDeathReason.ByNPC(bestNpcIndex), dmg, npcHitDir, NextSlot(playerIndex));
-            }
-            else
-            {
-                int dmg = Math.Max(1, (int)(bestProjDamage * DamageMultiplier));
-                SendSlotHurt(player, PlayerDeathReason.ByProjectile(-1, bestProjIndex), dmg, projHitDir, NextSlot(playerIndex));
             }
         }
     }
 
-    private int NextSlot(int playerIndex)
+    private bool TryClaimReadySlot(int playerIndex, long nowMs, out int cooldownSlot)
     {
-        int idx = _slotRotation[playerIndex];
-        _slotRotation[playerIndex] = (idx + 1) % CooldownSlots.Length;
-        return CooldownSlots[idx];
+        for (int s = 0; s < CooldownSlots.Length; s++)
+        {
+            if (nowMs >= _slotUnlockTime[playerIndex, s])
+            {
+                _slotUnlockTime[playerIndex, s] = nowMs + SlotCooldownMs;
+                cooldownSlot = CooldownSlots[s];
+                return true;
+            }
+        }
+
+        cooldownSlot = -1;
+        return false;
+    }
+
+    private void ResetPlayerSlots(int playerIndex)
+    {
+        if (playerIndex < 0 || playerIndex >= Main.maxPlayers) return;
+        for (int s = 0; s < CooldownSlots.Length; s++)
+        {
+            _slotUnlockTime[playerIndex, s] = 0;
+        }
     }
 
     private static void SendSlotHurt(TSPlayer player, PlayerDeathReason reason, int damage, int hitDirection, int cooldownSlot)
