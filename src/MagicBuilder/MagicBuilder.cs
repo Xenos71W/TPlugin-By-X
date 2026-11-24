@@ -14,23 +14,19 @@ namespace MagicBuilder
     {
         public override string Name => "MagicBuilder";
         public override string Author => "You";
-        public override Version Version => new Version(1, 3, 3, 0);
+        public override Version Version => new Version(1, 3, 1, 0);
         public override string Description => "Pilih titik pakai Ice Rod dan bangun struktur otomatis.";
 
         private const string UsePermission = "magicbuilder.use";
         private const string BuildPermission = "magicbuilder.build";
         private const string DebugPermission = "magicbuilder.debug";
 
-        // --- Pemilih titik & Toko Demolitionist ---
+        // --- Pemilih titik ---
         private const int IceRodItemType = 496;
         private const int IceBlockProjectile = 80;
         private const int IceBlockTileType = 127;
         private const ushort MarkerTileType = 8;
         private const int MaxPoints = 8;
-        private const int DemolitionistShopIndex = 4;
-        private const int ShopSyncIntervalTicks = 5;
-        private const int ShopOverridePacketId = 104;
-        private const int NpcTalkPacketId = 40;
 
         // --- Hellevator (TIDAK DIUBAH) ---
         private const ushort BrickTileType = 38;
@@ -207,12 +203,8 @@ namespace MagicBuilder
         private readonly Dictionary<int, Session> _sessions = new Dictionary<int, Session>();
         private readonly Queue<BuildJob> _jobs = new Queue<BuildJob>();
         private readonly HashSet<int> _debug = new HashSet<int>();
-        private readonly HashSet<int> _talkingDemolitionist = new HashSet<int>();
         private readonly object _lock = new object();
         private string _logPath;
-        private int _shopSyncTick;
-        private int _iceRodPrice = -1;
-        private int _demolitionistShopSlot = -1;
 
         public MagicBuilderPlugin(Main game) : base(game) { }
 
@@ -258,6 +250,33 @@ namespace MagicBuilder
 
             switch (sub)
             {
+                case "rod":
+                {
+                    Player tp = player.TPlayer;
+                    bool hasRod = false;
+                    if (tp != null && tp.inventory != null)
+                    {
+                        for (int i = 0; i < 50; i++)
+                        {
+                            if (tp.inventory[i] != null && tp.inventory[i].type == IceRodItemType && tp.inventory[i].stack > 0)
+                            {
+                                hasRod = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (hasRod)
+                    {
+                        player.SendInfoMessage("Kamu sudah punya Ice Rod di inventory.");
+                        break;
+                    }
+
+                    player.GiveItem(IceRodItemType, 1);
+                    player.SendSuccessMessage("Ice Rod diberikan! Pakai /build select lalu klik tile dengan Ice Rod untuk menandai titik.");
+                    break;
+                }
+
                 case "select":
                 {
                     bool now;
@@ -396,7 +415,7 @@ namespace MagicBuilder
                 }
 
                 default:
-                    player.SendInfoMessage("Pemakaian: /build select | points | remove <n> | clear | hellevator | npchouse [1|2|3] | arena <jarak> [tingkat] | pond <water|lava|honey> | confirm | cancel");
+                    player.SendInfoMessage("Pemakaian: /build rod | select | points | remove <n> | clear | hellevator | npchouse [1|2|3] | arena <jarak> [tingkat] | pond <water|lava|honey> | confirm | cancel");
                     break;
             }
         }
@@ -418,106 +437,11 @@ namespace MagicBuilder
             {
                 _sessions.Remove(args.Who);
                 _debug.Remove(args.Who);
-                _talkingDemolitionist.Remove(args.Who);
             }
         }
 
         // ---------------------------------------------------------------
-        // Toko Demolitionist: kirim paket 104 (Slot, ItemType, Stack, Prefix, Value, Flags)
-        // ---------------------------------------------------------------
-
-        private int GetDemolitionistShopSlot()
-        {
-            if (_demolitionistShopSlot >= 0)
-                return _demolitionistShopSlot;
-
-            int emptySlot = 12;
-            try
-            {
-                Chest shop = new Chest();
-                shop.SetupShop(DemolitionistShopIndex);
-                if (shop.item != null)
-                {
-                    int maxSlots = Math.Min(40, shop.item.Length);
-                    for (int s = 0; s < maxSlots; s++)
-                    {
-                        if (shop.item[s] == null || shop.item[s].type == 0 || shop.item[s].IsAir)
-                        {
-                            emptySlot = Math.Max(s, 12);
-                            break;
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                emptySlot = 12;
-            }
-
-            _demolitionistShopSlot = emptySlot;
-            return emptySlot;
-        }
-
-        private void SendIceRodShopSlot(int playerIndex)
-        {
-            if (_iceRodPrice < 0)
-            {
-                Item temp = new Item();
-                temp.SetDefaults(IceRodItemType);
-                _iceRodPrice = temp.value;
-            }
-
-            int slot = GetDemolitionistShopSlot();
-            NetMessage.SendData(
-                ShopOverridePacketId,
-                playerIndex,
-                -1,
-                null,
-                slot,
-                IceRodItemType,
-                1f,
-                0f,
-                _iceRodPrice,
-                0,
-                0
-            );
-        }
-
-        private void SyncDemolitionistShop()
-        {
-            _shopSyncTick++;
-            if (_shopSyncTick < ShopSyncIntervalTicks)
-                return;
-            _shopSyncTick = 0;
-
-            for (int i = 0; i < Main.maxPlayers; i++)
-            {
-                TSPlayer p = TShock.Players[i];
-                if (p == null || !p.Active || !p.RealPlayer)
-                    continue;
-
-                bool talking = false;
-                Player tp = p.TPlayer;
-                if (tp != null && tp.talkNPC >= 0 && tp.talkNPC < Main.maxNPCs)
-                {
-                    NPC npc = Main.npc[tp.talkNPC];
-                    if (npc != null && npc.active && npc.type == NPCID.Demolitionist)
-                        talking = true;
-                }
-
-                lock (_lock)
-                {
-                    if (_talkingDemolitionist.Contains(i))
-                        talking = true;
-                }
-
-                if (talking)
-                    SendIceRodShopSlot(i);
-            }
-        }
-
-        // ---------------------------------------------------------------
-        // Preview Sistem (Client-side sementara sebelum /build confirm - TIDAK DIUBAH)
+        // Preview Sistem (Client-side sementara sebelum /build confirm)
         // ---------------------------------------------------------------
 
         private static void ClearPreviewBoxes(TSPlayer player, List<PreviewBox> boxes)
@@ -671,6 +595,7 @@ namespace MagicBuilder
             TileBackup[,] backup = CaptureBackup(x0, y0, w, h);
             try
             {
+                // Anchor tali di (cx, sy - 1)
                 SetPreviewBlock(cx, sy - 1, BrickTileType);
 
                 for (int y = sy; y <= ey; y++)
@@ -765,6 +690,7 @@ namespace MagicBuilder
                         SetPreviewPlatform(x, tierY, st.Platform);
                 }
 
+                // Penanda lokasi cluster buff station di setiap tingkat platform
                 foreach (int tierY in a.TierYs)
                 {
                     foreach (int bx in buffCenters)
@@ -1099,8 +1025,7 @@ namespace MagicBuilder
 
         private void OnGameUpdate(EventArgs args)
         {
-            SyncDemolitionistShop();
-
+            // Bersihkan preview otomatis jika waktu konfirmasi 60 detik sudah habis
             List<(int PlayerIndex, List<PreviewBox> Boxes)> expiredPreviews = null;
             DateTime now = DateTime.UtcNow;
             lock (_lock)
@@ -2150,7 +2075,7 @@ namespace MagicBuilder
         }
 
         // ---------------------------------------------------------------
-        // Titik: baca dari packet projectile Ice Rod (TIDAK DIUBAH) & pantau NpcTalk
+        // Titik: baca dari packet projectile Ice Rod (TIDAK DIUBAH)
         // ---------------------------------------------------------------
 
         private void OnGetData(GetDataEventArgs args)
@@ -2160,31 +2085,6 @@ namespace MagicBuilder
                 return;
 
             int msgId = (int)args.MsgID;
-
-            byte[] buffer = args.Msg.readBuffer;
-            if (buffer == null || args.Index < 0 || args.Index >= buffer.Length)
-                return;
-
-            if (msgId == NpcTalkPacketId && args.Length >= 3 && args.Index + 3 <= buffer.Length)
-            {
-                short npcIdx = BitConverter.ToInt16(buffer, args.Index + 1);
-                bool isDemolitionist = npcIdx >= 0 && npcIdx < Main.maxNPCs
-                    && Main.npc[npcIdx] != null
-                    && Main.npc[npcIdx].active
-                    && Main.npc[npcIdx].type == NPCID.Demolitionist;
-
-                lock (_lock)
-                {
-                    if (isDemolitionist)
-                        _talkingDemolitionist.Add(who);
-                    else
-                        _talkingDemolitionist.Remove(who);
-                }
-
-                if (isDemolitionist)
-                    SendIceRodShopSlot(who);
-                return;
-            }
 
             bool debug;
             bool selecting;
@@ -2198,6 +2098,10 @@ namespace MagicBuilder
             bool wantDebug = debug && DebugPackets.Contains(msgId);
             bool wantSelect = selecting && msgId == 27;
             if (!wantDebug && !wantSelect)
+                return;
+
+            byte[] buffer = args.Msg.readBuffer;
+            if (buffer == null || args.Index < 0 || args.Index >= buffer.Length)
                 return;
 
             Player p = Main.player[who];
