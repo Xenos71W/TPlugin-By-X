@@ -1,9 +1,8 @@
 using System;
 using System.Collections.Concurrent;
-using System.Reflection;
 using System.Threading.Tasks;
 using Terraria;
-using Terraria.DataStructures;
+using Terraria.ID;
 using TerrariaApi.Server;
 using TShockAPI;
 
@@ -13,19 +12,21 @@ namespace NoIFrameSim;
 public class NoIFrameSim : TerrariaPlugin
 {
     public override string Name => "NoIFrameSim";
-    public override Version Version => new Version(1, 2, 0);
+    public override Version Version => new Version(1, 3, 0);
     public override string Author => "Custom";
-    public override string Description => "Bypass i-frame pemain menggunakan rotasi slot hurtCooldowns";
+    public override string Description => "Memberikan efek DoT mengalir seperti Cursed Inferno & Suffocation saat menempel musuh";
 
-    // === PENGATURAN KECEPATAN & DAMAGE ===
-    // 150ms = ~6.7 hit per detik (pas buat rotasi 5 slot cooldown Terraria)
-    private const int IntervalMs = 150;
-    // 1.0 = 100% full damage musuh di setiap tick (naikkan ke 1.5 atau 2.0 kalau mau lebih sadis)
-    private const double DamageMultiplier = 1.0;
-    private const int MaxDurationMs = 9000;
+    // === PENGATURAN INTENSITAS BOCOR DARAH ===
+    // 0 = Otomatis menyesuaikan damage musuh (Early game ringan, Bos Hardmode brutal)
+    // 1 = Ringan (~25 HP/detik)
+    // 2 = Sedang (~65 HP/detik)
+    // 3 = Brutal Maksimal (~115+ HP/detik, tembus Ankh Shield)
+    private const int ForceTier = 0;
 
-    private static readonly MethodInfo? SendPlayerHurtMethod =
-        typeof(NetMessage).GetMethod("SendPlayerHurt", BindingFlags.Public | BindingFlags.Static);
+    // Durasi debuff dalam tick (60 tick = 1 detik). 35 tick = ~0.58 detik setelah lepas dari musuh langsung hilang
+    private const int DebuffDurationTicks = 35;
+    private const int CheckIntervalMs = 200;
+    private const int MaxDurationMs = 15000;
 
     private readonly ConcurrentDictionary<int, bool> _activeTracking = new();
 
@@ -51,23 +52,34 @@ public class NoIFrameSim : TerrariaPlugin
         if (player == null || !player.Active || player.Dead || args.PVP)
             return;
 
+        int tier = DetermineTier(args.Damage);
+        ApplyFlowingDebuffs(player, tier);
+
         if (!_activeTracking.TryAdd(player.Index, true))
             return;
 
-        int tickDamage = Math.Max(10, (int)(args.Damage * DamageMultiplier));
-        _ = TrackBrutalDamageAsync(player, tickDamage);
+        _ = TrackContactDebuffAsync(player, tier);
     }
 
-    private async Task TrackBrutalDamageAsync(TSPlayer player, int tickDamage)
+    private static int DetermineTier(int hitDamage)
+    {
+        if (ForceTier is >= 1 and <= 3)
+            return ForceTier;
+
+        if (hitDamage >= 100) return 3;
+        if (hitDamage >= 45) return 2;
+        return 1;
+    }
+
+    private async Task TrackContactDebuffAsync(TSPlayer player, int tier)
     {
         try
         {
-            int maxIterations = MaxDurationMs / IntervalMs;
-            int cooldownSlot = 0;
+            int maxIterations = MaxDurationMs / CheckIntervalMs;
 
             for (int i = 0; i < maxIterations; i++)
             {
-                await Task.Delay(IntervalMs);
+                await Task.Delay(CheckIntervalMs);
 
                 if (player == null || !player.Active || player.Dead || player.TPlayer == null)
                     break;
@@ -75,13 +87,34 @@ public class NoIFrameSim : TerrariaPlugin
                 if (!IsTouchingDanger(player.TPlayer))
                     break;
 
-                ApplyRealHit(player, tickDamage, cooldownSlot);
-                cooldownSlot = (cooldownSlot + 1) % 5;
+                ApplyFlowingDebuffs(player, tier);
             }
         }
         finally
         {
             _activeTracking.TryRemove(player.Index, out _);
+        }
+    }
+
+    private static void ApplyFlowingDebuffs(TSPlayer player, int tier)
+    {
+        // Tier 1: Cursed Inferno + Electrified (darah mengalir halus)
+        player.SetBuff(BuffID.CursedInferno, DebuffDurationTicks);
+        player.SetBuff(BuffID.Electrified, DebuffDurationTicks);
+
+        // Tier 2: Tambah Suffocation + Oiled (mempercepat DoT api secara drastis)
+        if (tier >= 2)
+        {
+            player.SetBuff(BuffID.Suffocation, DebuffDurationTicks);
+            player.SetBuff(BuffID.Oiled, DebuffDurationTicks);
+        }
+
+        // Tier 3: Tambah Daybreak + Acid Venom + Burning (bocor super deras)
+        if (tier >= 3)
+        {
+            player.SetBuff(BuffID.Daybreak, DebuffDurationTicks);
+            player.SetBuff(BuffID.Venom, DebuffDurationTicks);
+            player.SetBuff(BuffID.Burning, DebuffDurationTicks);
         }
     }
 
@@ -92,7 +125,7 @@ public class NoIFrameSim : TerrariaPlugin
             NPC npc = Main.npc[n];
             if (npc != null && npc.active && !npc.friendly && npc.damage > 0 && !npc.dontTakeDamage)
             {
-                if (tPlayer.Hitbox.Intersects(npc.Hitbox) || tPlayer.Distance(npc.Center) < 64f)
+                if (tPlayer.Hitbox.Intersects(npc.Hitbox) || tPlayer.Distance(npc.Center) < 60f)
                     return true;
             }
         }
@@ -108,33 +141,5 @@ public class NoIFrameSim : TerrariaPlugin
         }
 
         return false;
-    }
-
-    private static void ApplyRealHit(TSPlayer player, int damage, int cooldownSlot)
-    {
-        if (SendPlayerHurtMethod != null)
-        {
-            var parameters = SendPlayerHurtMethod.GetParameters();
-            object?[] invokeArgs = new object?[parameters.Length];
-
-            if (parameters.Length > 0) invokeArgs[0] = player.Index;
-            if (parameters.Length > 1) invokeArgs[1] = PlayerDeathReason.LegacyDefault();
-            if (parameters.Length > 2) invokeArgs[2] = damage;
-            if (parameters.Length > 3) invokeArgs[3] = 0;
-            if (parameters.Length > 4) invokeArgs[4] = false;
-            if (parameters.Length > 5) invokeArgs[5] = false;
-            if (parameters.Length > 6) invokeArgs[6] = 0;
-            if (parameters.Length > 7) invokeArgs[7] = cooldownSlot;
-
-            for (int p = 8; p < parameters.Length; p++)
-            {
-                invokeArgs[p] = parameters[p].HasDefaultValue ? parameters[p].DefaultValue : 0;
-            }
-
-            SendPlayerHurtMethod.Invoke(null, invokeArgs);
-            return;
-        }
-
-        player.DamagePlayer(damage);
     }
 }
