@@ -14,7 +14,7 @@ namespace MagicBuilder
     {
         public override string Name => "MagicBuilder";
         public override string Author => "You";
-        public override Version Version => new Version(1, 1, 3, 0);
+        public override Version Version => new Version(1, 2, 0, 0);
         public override string Description => "Pilih titik pakai Ice Rod dan bangun struktur otomatis.";
 
         private const string UsePermission = "magicbuilder.use";
@@ -42,7 +42,7 @@ namespace MagicBuilder
         private const int HouseHalfWidth = 5; // 5 + 1 + 5 = 11 tile
         private const int FloorStepHeight = 6; // +1 lantai dasar = 7 tile per tingkat
 
-        // --- Boss Arena ---
+        // --- Boss Arena (TIDAK DIUBAH) ---
         private const int ArenaColsPerTick = 12;
         private const int ArenaMinWidth = 20;
         private const int ArenaMaxWidth = 600;
@@ -56,6 +56,11 @@ namespace MagicBuilder
         private const int StarInBottleStyle = 7;
         private const int HeartLanternStyle = 9;
 
+        // --- Fishing Pond (25 x 13 = 325 tile cairan -> 100% Fishing Power) ---
+        private const int PondInnerHalfWidth = 12; // 12 + 1 + 12 = 25 tile lebar dalam
+        private const int PondLiquidDepth = 13;    // 25 x 13 = 325 tile cairan
+        private const int PondRoomHeight = 5;      // 5 tile tinggi ruang mancing di atas jembatan
+
         private static readonly HashSet<int> DebugPackets = new HashSet<int> { 17, 27, 29 };
 
         private class Session
@@ -67,6 +72,7 @@ namespace MagicBuilder
             public string PendingKind;
             public List<HouseSpec> PendingHouses;
             public ArenaSpec PendingArena;
+            public PondSpec PendingPond;
             public int PendingX;
             public int PendingStartY;
             public int PendingEndY;
@@ -119,6 +125,15 @@ namespace MagicBuilder
             public HouseStyle Style;
         }
 
+        private class PondSpec
+        {
+            public int X;
+            public int Y;
+            public byte LiquidType; // 0 = Water, 1 = Lava, 2 = Honey
+            public string LiquidName;
+            public HouseStyle Style;
+        }
+
         private static readonly Dictionary<string, HouseStyle> HouseStyles = new Dictionary<string, HouseStyle>
         {
             ["forest"]     = new HouseStyle("Forest",     TileID.WoodBlock,       WallID.Wood,            0,  TileID.Tables,  0,  0,  0,  0),
@@ -133,10 +148,11 @@ namespace MagicBuilder
 
         private class BuildJob
         {
-            public string Kind; // "hellevator", "house", "arena"
+            public string Kind; // "hellevator", "house", "arena", "pond"
             public int Floors;
             public HouseStyle Style;
             public ArenaSpec Arena;
+            public PondSpec Pond;
             public int NextX;
             public int ObjectFailed;
             public int PlayerIndex;
@@ -298,6 +314,11 @@ namespace MagicBuilder
                     PrepareArena(player, args.Parameters);
                     break;
 
+                case "pond":
+                case "fishing":
+                    PreparePond(player, args.Parameters);
+                    break;
+
                 case "confirm":
                     ConfirmBuild(player);
                     break;
@@ -327,7 +348,7 @@ namespace MagicBuilder
                 }
 
                 default:
-                    player.SendInfoMessage("Pemakaian: /build select | points | remove <n> | clear | hellevator | npchouse [1|2|3] | arena <jarak> [tingkat] | confirm | cancel");
+                    player.SendInfoMessage("Pemakaian: /build select | points | remove <n> | clear | hellevator | npchouse [1|2|3] | arena <jarak> [tingkat] | pond <water|lava|honey> | confirm | cancel");
                     break;
             }
         }
@@ -451,7 +472,7 @@ namespace MagicBuilder
                 if (!s.HasPending || DateTime.UtcNow > s.PendingExpires)
                 {
                     s.HasPending = false;
-                    player.SendErrorMessage("Tidak ada pembangunan yang menunggu konfirmasi. Mulai lagi dengan /build hellevator, /build npchouse, atau /build arena.");
+                    player.SendErrorMessage("Tidak ada pembangunan yang menunggu konfirmasi. Mulai lagi dengan /build hellevator, /build npchouse, /build arena, atau /build pond.");
                     return;
                 }
 
@@ -492,6 +513,23 @@ namespace MagicBuilder
                     });
                     queued = 1;
                 }
+                else if (kind == "pond" && s.PendingPond != null)
+                {
+                    PondSpec p = s.PendingPond;
+                    _jobs.Enqueue(new BuildJob
+                    {
+                        Kind = "pond",
+                        PlayerIndex = player.Index,
+                        PlayerName = player.Name,
+                        Style = p.Style,
+                        Pond = p,
+                        X = p.X,
+                        StartY = p.Y,
+                        EndY = p.Y,
+                        NextY = p.Y
+                    });
+                    queued = 1;
+                }
                 else
                 {
                     _jobs.Enqueue(new BuildJob
@@ -510,6 +548,7 @@ namespace MagicBuilder
                 s.HasPending = false;
                 s.PendingHouses = null;
                 s.PendingArena = null;
+                s.PendingPond = null;
                 oldPoints = new List<(int X, int Y)>(s.Points);
                 s.Points.Clear();
             }
@@ -521,6 +560,8 @@ namespace MagicBuilder
                 player.SendSuccessMessage($"Membangun {queued} bangunan rumah NPC. Pakai /build cancel untuk menghentikan sisanya.");
             else if (kind == "arena")
                 player.SendSuccessMessage("Pembangunan Boss Arena dimulai. Pakai /build cancel untuk menghentikan.");
+            else if (kind == "pond")
+                player.SendSuccessMessage("Pembangunan kolam pancing dimulai. Pakai /build cancel untuk menghentikan.");
             else
                 player.SendSuccessMessage("Pembangunan hellevator dimulai. Pakai /build cancel untuk menghentikan.");
         }
@@ -580,6 +621,11 @@ namespace MagicBuilder
                 {
                     finished = StepArenaBuild(job);
                 }
+                else if (job.Kind == "pond")
+                {
+                    BuildFishingPond(job);
+                    finished = true;
+                }
                 else
                 {
                     if (!job.AnchorDone)
@@ -629,6 +675,8 @@ namespace MagicBuilder
                         owner.SendSuccessMessage($"Rumah NPC ({job.Style.Name}, {job.Floors} tingkat) di ({job.X}, {job.StartY}) selesai.");
                     else if (job.Kind == "arena")
                         owner.SendSuccessMessage($"Boss Arena ({job.Style.Name}, {job.Arena.TierYs.Count} tingkat platform) selesai.");
+                    else if (job.Kind == "pond")
+                        owner.SendSuccessMessage($"Kolam Pancing ({job.Pond.LiquidName}, biome {job.Style.Name}, 100% fishing power) di ({job.X}, {job.StartY}) selesai.");
                     else
                         owner.SendSuccessMessage("Hellevator selesai.");
 
@@ -639,7 +687,7 @@ namespace MagicBuilder
                     if (job.RopeFailed > 0)
                         owner.SendWarningMessage($"{job.RopeFailed} tile tali gagal dipasang.");
                     if (job.ObjectFailed > 0)
-                        owner.SendWarningMessage($"{job.ObjectFailed} furnitur/buff station gagal dipasang.");
+                        owner.SendWarningMessage($"{job.ObjectFailed} furnitur/pintu gagal dipasang.");
                 }
             }
 
@@ -752,7 +800,217 @@ namespace MagicBuilder
         }
 
         // ---------------------------------------------------------------
-        // Boss Arena (2 Titik + Jarak Platform Custom + Buff Dempet + Asphalt Post-Mech)
+        // Fishing Pond (1 Titik, 25x13 = 325 tile cairan, Gray Brick + Glass Wall + Biome Torch)
+        // ---------------------------------------------------------------
+
+        private void PreparePond(TSPlayer player, List<string> parameters)
+        {
+            if (!player.HasPermission(BuildPermission))
+            {
+                player.SendErrorMessage("Kamu tidak punya permission " + BuildPermission);
+                return;
+            }
+
+            if (parameters.Count != 2)
+            {
+                player.SendErrorMessage("Pemakaian: /build pond <water|lava|honey>");
+                return;
+            }
+
+            string liqArg = parameters[1].ToLowerInvariant();
+            byte liquidType;
+            string liquidName;
+
+            switch (liqArg)
+            {
+                case "water":
+                    liquidType = 0;
+                    liquidName = "Water";
+                    break;
+                case "lava":
+                    liquidType = 1;
+                    liquidName = "Lava";
+                    break;
+                case "honey":
+                    liquidType = 2;
+                    liquidName = "Honey";
+                    break;
+                default:
+                    player.SendErrorMessage("Jenis cairan harus dipilih: water, lava, atau honey.");
+                    return;
+            }
+
+            (int X, int Y) point;
+            lock (_lock)
+            {
+                Session s = GetSession(player.Index);
+                if (s.Points.Count == 0)
+                {
+                    player.SendErrorMessage("Belum ada titik. Pakai /build select lalu klik 1 titik permukaan kolam dengan Ice Rod.");
+                    return;
+                }
+                point = s.Points[0];
+
+                foreach (BuildJob j in _jobs)
+                {
+                    if (j.PlayerIndex == player.Index && !j.Cancelled)
+                    {
+                        player.SendErrorMessage("Kamu masih punya pembangunan yang berjalan. Tunggu selesai atau /build cancel.");
+                        return;
+                    }
+                }
+            }
+
+            int cx = point.X;
+            int fy = point.Y;
+
+            int leftX = cx - PondInnerHalfWidth - 1;  // cx - 13
+            int rightX = cx + PondInnerHalfWidth + 1; // cx + 13
+            int topY = fy - PondRoomHeight - 1;       // fy - 6
+            int bottomY = fy + PondLiquidDepth + 1;   // fy + 14
+
+            if (leftX < 5 || rightX >= Main.maxTilesX - 5 || topY < 5 || bottomY >= Main.maxTilesY - 5)
+            {
+                player.SendErrorMessage("Area kolam pancing terlalu dekat tepi dunia.");
+                return;
+            }
+
+            for (int x = leftX; x <= rightX; x++)
+            {
+                for (int y = topY; y <= bottomY; y++)
+                {
+                    if (!player.HasBuildPermission(x, y, false))
+                    {
+                        player.SendErrorMessage($"Kamu tidak boleh membangun di ({x}, {y}) (region/spawn protection). Dibatalkan.");
+                        return;
+                    }
+                }
+            }
+
+            HouseStyle style = DetectHouseStyle(cx, fy);
+
+            var spec = new PondSpec
+            {
+                X = cx,
+                Y = fy,
+                LiquidType = liquidType,
+                LiquidName = liquidName,
+                Style = style
+            };
+
+            lock (_lock)
+            {
+                Session s = GetSession(player.Index);
+                s.HasPending = true;
+                s.PendingKind = "pond";
+                s.PendingPond = spec;
+                s.PendingExpires = DateTime.UtcNow.AddSeconds(ConfirmSeconds);
+            }
+
+            player.SendInfoMessage($"Kolam Pancing: cairan {liquidName} (25x13 = 325 tile, 100% fishing power) di ({cx}, {fy}), Gray Brick + Glass Wall, torch biome {style.Name}.");
+            player.SendWarningMessage($"Ini mengubah dunia dan BELUM ADA UNDO. Backup dunia dulu. Ketik /build confirm dalam {ConfirmSeconds} detik untuk mulai.");
+        }
+
+        private void BuildFishingPond(BuildJob job)
+        {
+            PondSpec p = job.Pond;
+            HouseStyle st = job.Style;
+            int cx = p.X;
+            int fy = p.Y;
+
+            int innerLeft = cx - PondInnerHalfWidth;   // cx - 12
+            int innerRight = cx + PondInnerHalfWidth;  // cx + 12
+            int leftX = innerLeft - 1;                 // cx - 13
+            int rightX = innerRight + 1;               // cx + 13
+            int topY = fy - PondRoomHeight - 1;        // fy - 6
+            int bottomY = fy + PondLiquidDepth + 1;    // fy + 14
+
+            // 1. Bersihkan seluruh area + reset cairan lama agar tidak tercampur (obsidian/honey block)
+            for (int y = topY; y <= bottomY; y++)
+            {
+                for (int x = leftX; x <= rightX; x++)
+                {
+                    ClearTile(job, x, y);
+                    var t = Main.tile[x, y];
+                    t.liquid = 0;
+                    t.liquidType(0);
+                    t.wall = 0;
+                    t.wallColor(0);
+                    WorldGen.SquareWallFrame(x, y, true);
+                }
+            }
+
+            // 2. Bangun struktur tertutup Gray Brick (atap, dinding kiri-kanan, dan bak kolam bawah)
+            for (int x = leftX; x <= rightX; x++)
+            {
+                PlaceBlock(job, x, topY, TileID.GrayBrick);
+                PlaceBlock(job, x, bottomY, TileID.GrayBrick);
+            }
+
+            for (int y = topY + 1; y <= bottomY - 1; y++)
+            {
+                PlaceBlock(job, leftX, y, TileID.GrayBrick);
+                PlaceBlock(job, rightX, y, TileID.GrayBrick);
+            }
+
+            // 3. Pasang Glass Wall di seluruh bagian dalam (ruang atas maupun belakang kolam)
+            for (int y = topY + 1; y <= bottomY - 1; y++)
+            {
+                for (int x = innerLeft; x <= innerRight; x++)
+                {
+                    var t = Main.tile[x, y];
+                    t.wall = WallID.Glass;
+                    t.wallColor(0);
+                    WorldGen.SquareWallFrame(x, y, true);
+                }
+            }
+
+            // 4. Isi cairan penuh (25 x 13 = 325 tile) di bak kolam (fy + 1 .. fy + 13)
+            for (int y = fy + 1; y <= fy + PondLiquidDepth; y++)
+            {
+                for (int x = innerLeft; x <= innerRight; x++)
+                {
+                    var t = Main.tile[x, y];
+                    t.active(false);
+                    t.halfBrick(false);
+                    t.slope(0);
+                    t.liquidType(p.LiquidType);
+                    t.liquid = 255;
+                }
+            }
+
+            // 5. Pasang jembatan Platform di permukaan air (y = fy)
+            for (int x = innerLeft; x <= innerRight; x++)
+            {
+                PlacePlatform(job, x, fy, 0);
+            }
+
+            // 6. Pasang Pintu kiri & kanan di atas permukaan (fy - 3 .. fy - 1) agar tertutup rapat tapi tetap bisa dilewati
+            for (int y = fy - 3; y <= fy - 1; y++)
+            {
+                ClearTile(job, leftX, y);
+                ClearTile(job, rightX, y);
+            }
+            if (!WorldGen.PlaceDoor(leftX, fy - 2, TileID.ClosedDoor, 0))
+                job.ObjectFailed++;
+            if (!WorldGen.PlaceDoor(rightX, fy - 2, TileID.ClosedDoor, 0))
+                job.ObjectFailed++;
+
+            // 7. Pasang Torch sesuai biome di dinding kaca ruang atas (y = fy - 4)
+            int[] torchXs = { innerLeft, cx - 6, cx, cx + 6, innerRight };
+            foreach (int tx in torchXs)
+            {
+                if (!WorldGen.PlaceTile(tx, fy - 4, TileID.Torches, true, true, -1, st.Torch))
+                    job.TorchFailed++;
+            }
+
+            int width = rightX - leftX + 1;   // 27
+            int height = bottomY - topY + 1;  // 21
+            TSPlayer.All.SendTileRect((short)leftX, (short)topY, (byte)width, (byte)height);
+        }
+
+        // ---------------------------------------------------------------
+        // Boss Arena (2 Titik + Jarak Platform Custom + Buff Dempet + Asphalt Post-Mech - TIDAK DIUBAH)
         // ---------------------------------------------------------------
 
         private void PrepareArena(TSPlayer player, List<string> parameters)
@@ -915,15 +1173,12 @@ namespace MagicBuilder
             {
                 int x = job.NextX;
 
-                // Bersihkan seluruh ruang di atas lantai bawah (topY .. bottomY - 1)
                 for (int y = a.TopY; y <= a.BottomY - 1; y++)
                     ClearTile(job, x, y);
 
-                // Lantai paling bawah: Asphalt jika Hardmode + >=1 Mech Boss, selain itu biarkan blok asli
                 if (a.UseAsphalt)
                     PlaceBlock(job, x, a.BottomY, TileID.Asphalt);
 
-                // Pasang platform murni di setiap tingkat (tanpa blok solid)
                 foreach (int tierY in a.TierYs)
                     PlacePlatform(job, x, tierY, st.Platform);
 
@@ -940,7 +1195,6 @@ namespace MagicBuilder
             if (job.NextX <= a.RightX)
                 return false;
 
-            // Tahap akhir: pasang Buff Stations (dempet) & Torch langsung di platform
             List<int> buffCenters = GetArenaBuffCenters(a);
             PlaceArenaBuffsAndLights(job, buffCenters);
             return true;
@@ -951,12 +1205,10 @@ namespace MagicBuilder
             ArenaSpec a = job.Arena;
             HouseStyle st = job.Style;
 
-            // Buff dempet di lantai bawah jika memakai Asphalt
             if (a.UseAsphalt)
             {
                 foreach (int bx in buffCenters)
                 {
-                    // Campfire di bx-2..bx, langsung dempet dengan Bast Statue di bx+1..bx+2
                     if (!WorldGen.PlaceObject(bx - 1, a.BottomY - 1, TileID.Campfire, true, st.Campfire))
                         job.ObjectFailed++;
 
@@ -965,19 +1217,16 @@ namespace MagicBuilder
                 }
             }
 
-            // Buff dempet & penerangan di setiap tingkat platform
             foreach (int tierY in a.TierYs)
             {
                 foreach (int bx in buffCenters)
                 {
-                    // Atas platform: Campfire (bx-2..bx) dempet langsung dengan Bast Statue (bx+1..bx+2)
                     if (!WorldGen.PlaceObject(bx - 1, tierY - 1, TileID.Campfire, true, st.Campfire))
                         job.ObjectFailed++;
 
                     if (!WorldGen.PlaceObject(bx + 1, tierY - 1, BastStatueTileType, true))
                         job.ObjectFailed++;
 
-                    // Bawah platform: Heart Lantern (bx) dempet langsung dengan Star in a Bottle (bx+1)
                     if (!WorldGen.PlaceObject(bx, tierY + 1, TileID.HangingLanterns, true, HeartLanternStyle))
                         job.ObjectFailed++;
 
@@ -985,7 +1234,6 @@ namespace MagicBuilder
                         job.ObjectFailed++;
                 }
 
-                // Torch penerangan di sepanjang platform (menghindari area buff station bx-2..bx+2)
                 for (int x = a.LeftX + 2; x <= a.RightX - 2; x += ArenaTorchInterval)
                 {
                     bool nearBuff = false;
@@ -1006,7 +1254,6 @@ namespace MagicBuilder
                 }
             }
 
-            // Kirim rect penuh tierY-3 .. tierY+2 (tinggi 6) agar seluruh 3 tile tinggi Bast Statue & 2 tile lentera tampil utuh di client
             foreach (int tierY in a.TierYs)
             {
                 SendLargeTileRect(a.LeftX, tierY - 3, a.RightX - a.LeftX + 1, 6);
