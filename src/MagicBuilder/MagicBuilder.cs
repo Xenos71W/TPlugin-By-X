@@ -14,7 +14,7 @@ namespace MagicBuilder
     {
         public override string Name => "MagicBuilder";
         public override string Author => "You";
-        public override Version Version => new Version(1, 2, 0, 0);
+        public override Version Version => new Version(1, 3, 0, 0);
         public override string Description => "Pilih titik pakai Ice Rod dan bangun struktur otomatis.";
 
         private const string UsePermission = "magicbuilder.use";
@@ -56,12 +56,43 @@ namespace MagicBuilder
         private const int StarInBottleStyle = 7;
         private const int HeartLanternStyle = 9;
 
-        // --- Fishing Pond (25 x 13 = 325 tile cairan -> 100% Fishing Power) ---
+        // --- Fishing Pond (25 x 13 = 325 tile cairan -> 100% Fishing Power - TIDAK DIUBAH) ---
         private const int PondInnerHalfWidth = 12; // 12 + 1 + 12 = 25 tile lebar dalam
         private const int PondLiquidDepth = 13;    // 25 x 13 = 325 tile cairan
         private const int PondRoomHeight = 5;      // 5 tile tinggi ruang mancing di atas jembatan
 
         private static readonly HashSet<int> DebugPackets = new HashSet<int> { 17, 27, 29 };
+
+        private struct PreviewBox
+        {
+            public int X0;
+            public int Y0;
+            public int W;
+            public int H;
+
+            public PreviewBox(int x0, int y0, int w, int h)
+            {
+                X0 = x0;
+                Y0 = y0;
+                W = w;
+                H = h;
+            }
+        }
+
+        private struct TileBackup
+        {
+            public bool Active;
+            public ushort Type;
+            public ushort Wall;
+            public byte Liquid;
+            public byte LiquidType;
+            public short FrameX;
+            public short FrameY;
+            public bool HalfBrick;
+            public byte Slope;
+            public byte Color;
+            public byte WallColor;
+        }
 
         private class Session
         {
@@ -77,6 +108,7 @@ namespace MagicBuilder
             public int PendingStartY;
             public int PendingEndY;
             public DateTime PendingExpires;
+            public readonly List<PreviewBox> PreviewBoxes = new List<PreviewBox>();
         }
 
         private class HouseStyle
@@ -283,12 +315,20 @@ namespace MagicBuilder
                 case "clear":
                 {
                     List<(int X, int Y)> old;
+                    List<PreviewBox> oldPreviews;
                     lock (_lock)
                     {
                         Session s = GetSession(player.Index);
                         old = new List<(int X, int Y)>(s.Points);
                         s.Points.Clear();
+                        s.HasPending = false;
+                        s.PendingHouses = null;
+                        s.PendingArena = null;
+                        s.PendingPond = null;
+                        oldPreviews = new List<PreviewBox>(s.PreviewBoxes);
+                        s.PreviewBoxes.Clear();
                     }
+                    ClearPreviewBoxes(player, oldPreviews);
                     foreach (var p in old)
                         player.SendTileRect((short)p.X, (short)p.Y, 1, 1);
                     player.SendSuccessMessage($"{old.Count} titik dihapus.");
@@ -374,6 +414,342 @@ namespace MagicBuilder
         }
 
         // ---------------------------------------------------------------
+        // Preview Sistem (Client-side sementara sebelum /build confirm)
+        // ---------------------------------------------------------------
+
+        private static void ClearPreviewBoxes(TSPlayer player, List<PreviewBox> boxes)
+        {
+            if (player == null || !player.Active || boxes == null || boxes.Count == 0)
+                return;
+
+            foreach (PreviewBox box in boxes)
+            {
+                SendLargeTileRectToPlayer(player, box.X0, box.Y0, box.W, box.H);
+            }
+        }
+
+        private static void SendLargeTileRectToPlayer(TSPlayer player, int x0, int y0, int totalW, int totalH)
+        {
+            const int Chunk = 64;
+            for (int x = x0; x < x0 + totalW; x += Chunk)
+            {
+                byte w = (byte)Math.Min(Chunk, (x0 + totalW) - x);
+                for (int y = y0; y < y0 + totalH; y += Chunk)
+                {
+                    byte h = (byte)Math.Min(Chunk, (y0 + totalH) - y);
+                    player.SendTileRect((short)x, (short)y, w, h);
+                }
+            }
+        }
+
+        private static TileBackup[,] CaptureBackup(int x0, int y0, int w, int h)
+        {
+            var backup = new TileBackup[w, h];
+            for (int dx = 0; dx < w; dx++)
+            {
+                for (int dy = 0; dy < h; dy++)
+                {
+                    var t = Main.tile[x0 + dx, y0 + dy];
+                    if (t == null)
+                        continue;
+
+                    backup[dx, dy] = new TileBackup
+                    {
+                        Active = t.active(),
+                        Type = t.type,
+                        Wall = t.wall,
+                        Liquid = t.liquid,
+                        LiquidType = (byte)t.liquidType(),
+                        FrameX = t.frameX,
+                        FrameY = t.frameY,
+                        HalfBrick = t.halfBrick(),
+                        Slope = t.slope(),
+                        Color = t.color(),
+                        WallColor = t.wallColor()
+                    };
+                }
+            }
+            return backup;
+        }
+
+        private static void RestoreBackup(int x0, int y0, int w, int h, TileBackup[,] backup)
+        {
+            for (int dx = 0; dx < w; dx++)
+            {
+                for (int dy = 0; dy < h; dy++)
+                {
+                    var t = Main.tile[x0 + dx, y0 + dy];
+                    if (t == null)
+                        continue;
+
+                    TileBackup b = backup[dx, dy];
+                    t.active(b.Active);
+                    t.type = b.Type;
+                    t.wall = b.Wall;
+                    t.liquid = b.Liquid;
+                    t.liquidType(b.LiquidType);
+                    t.frameX = b.FrameX;
+                    t.frameY = b.FrameY;
+                    t.halfBrick(b.HalfBrick);
+                    t.slope(b.Slope);
+                    t.color(b.Color);
+                    t.wallColor(b.WallColor);
+                }
+            }
+        }
+
+        private static void SetPreviewEmpty(int x, int y, ushort wall = 0)
+        {
+            var t = Main.tile[x, y];
+            if (t == null) return;
+            t.active(false);
+            t.wall = wall;
+            t.liquid = 0;
+            t.liquidType(0);
+            t.halfBrick(false);
+            t.slope(0);
+            t.color(0);
+            t.wallColor(0);
+        }
+
+        private static void SetPreviewBlock(int x, int y, ushort blockType, ushort wall = 0)
+        {
+            var t = Main.tile[x, y];
+            if (t == null) return;
+            t.active(true);
+            t.type = blockType;
+            t.wall = wall;
+            t.liquid = 0;
+            t.liquidType(0);
+            t.halfBrick(false);
+            t.slope(0);
+            t.color(0);
+            t.wallColor(0);
+        }
+
+        private static void SetPreviewPlatform(int x, int y, int style, ushort wall = 0)
+        {
+            var t = Main.tile[x, y];
+            if (t == null) return;
+            t.active(true);
+            t.type = TileID.Platforms;
+            t.frameX = 0;
+            t.frameY = (short)(style * 18);
+            t.wall = wall;
+            t.liquid = 0;
+            t.liquidType(0);
+            t.halfBrick(false);
+            t.slope(0);
+            t.color(0);
+            t.wallColor(0);
+        }
+
+        private static void SetPreviewLiquid(int x, int y, byte liquidType, ushort wall)
+        {
+            var t = Main.tile[x, y];
+            if (t == null) return;
+            t.active(false);
+            t.wall = wall;
+            t.liquidType(liquidType);
+            t.liquid = 255;
+            t.halfBrick(false);
+            t.slope(0);
+            t.color(0);
+            t.wallColor(0);
+        }
+
+        private static PreviewBox ShowHellevatorPreview(TSPlayer player, int cx, int sy, int ey)
+        {
+            int x0 = cx - 2;
+            int y0 = sy - 1;
+            int w = 5;
+            int h = (ey - y0) + 1;
+
+            TileBackup[,] backup = CaptureBackup(x0, y0, w, h);
+            try
+            {
+                // Anchor tali di (cx, sy - 1)
+                SetPreviewBlock(cx, sy - 1, BrickTileType);
+
+                for (int y = sy; y <= ey; y++)
+                {
+                    SetPreviewBlock(cx - 2, y, BrickTileType);
+                    SetPreviewBlock(cx + 2, y, BrickTileType);
+                    SetPreviewEmpty(cx - 1, y, WallType);
+                    SetPreviewEmpty(cx + 1, y, WallType);
+                    SetPreviewBlock(cx, y, RopeTileType, WallType);
+                }
+
+                SendLargeTileRectToPlayer(player, x0, y0, w, h);
+            }
+            finally
+            {
+                RestoreBackup(x0, y0, w, h, backup);
+            }
+
+            return new PreviewBox(x0, y0, w, h);
+        }
+
+        private static PreviewBox ShowHousePreview(TSPlayer player, HouseSpec spec)
+        {
+            HouseStyle st = spec.Style;
+            int cx = spec.X;
+            int fy = spec.Y;
+            int floors = spec.Floors;
+            int left = cx - HouseHalfWidth;
+            int right = cx + HouseHalfWidth;
+            int topY = fy - (floors * FloorStepHeight);
+            int w = 11;
+            int h = (fy - topY) + 1;
+
+            TileBackup[,] backup = CaptureBackup(left, topY, w, h);
+            try
+            {
+                for (int x = left; x <= right; x++)
+                    SetPreviewBlock(x, fy, st.Block);
+
+                for (int f = 0; f < floors; f++)
+                {
+                    int floorBottom = fy - (f * FloorStepHeight);
+                    int floorTop = floorBottom - FloorStepHeight;
+
+                    for (int y = floorTop + 1; y <= floorBottom - 1; y++)
+                    {
+                        SetPreviewBlock(left, y, st.Block);
+                        SetPreviewBlock(right, y, st.Block);
+
+                        for (int x = left + 1; x <= right - 1; x++)
+                            SetPreviewEmpty(x, y, st.Wall);
+                    }
+
+                    for (int x = left; x <= left + 6; x++)
+                        SetPreviewBlock(x, floorTop, st.Block);
+
+                    for (int x = left + 7; x <= left + 9; x++)
+                        SetPreviewPlatform(x, floorTop, st.Platform);
+
+                    SetPreviewBlock(right, floorTop, st.Block);
+                }
+
+                SendLargeTileRectToPlayer(player, left, topY, w, h);
+            }
+            finally
+            {
+                RestoreBackup(left, topY, w, h, backup);
+            }
+
+            return new PreviewBox(left, topY, w, h);
+        }
+
+        private PreviewBox ShowArenaPreview(TSPlayer player, ArenaSpec a)
+        {
+            HouseStyle st = a.Style;
+            int w = a.RightX - a.LeftX + 1;
+            int h = a.BottomY - a.TopY + 1;
+            List<int> buffCenters = GetArenaBuffCenters(a);
+
+            TileBackup[,] backup = CaptureBackup(a.LeftX, a.TopY, w, h);
+            try
+            {
+                for (int x = a.LeftX; x <= a.RightX; x++)
+                {
+                    for (int y = a.TopY; y <= a.BottomY - 1; y++)
+                        SetPreviewEmpty(x, y);
+
+                    if (a.UseAsphalt)
+                        SetPreviewBlock(x, a.BottomY, TileID.Asphalt);
+
+                    foreach (int tierY in a.TierYs)
+                        SetPreviewPlatform(x, tierY, st.Platform);
+                }
+
+                // Penanda lokasi cluster buff station di setiap tingkat platform
+                foreach (int tierY in a.TierYs)
+                {
+                    foreach (int bx in buffCenters)
+                    {
+                        if (tierY - 1 >= a.TopY)
+                        {
+                            SetPreviewBlock(bx - 1, tierY - 1, MarkerTileType);
+                            SetPreviewBlock(bx, tierY - 1, MarkerTileType);
+                            SetPreviewBlock(bx + 1, tierY - 1, MarkerTileType);
+                        }
+                    }
+                }
+
+                SendLargeTileRectToPlayer(player, a.LeftX, a.TopY, w, h);
+            }
+            finally
+            {
+                RestoreBackup(a.LeftX, a.TopY, w, h, backup);
+            }
+
+            return new PreviewBox(a.LeftX, a.TopY, w, h);
+        }
+
+        private static PreviewBox ShowPondPreview(TSPlayer player, PondSpec p)
+        {
+            int cx = p.X;
+            int fy = p.Y;
+
+            int innerLeft = cx - PondInnerHalfWidth;
+            int innerRight = cx + PondInnerHalfWidth;
+            int leftX = innerLeft - 1;
+            int rightX = innerRight + 1;
+            int topY = fy - PondRoomHeight - 1;
+            int bottomY = fy + PondLiquidDepth + 1;
+            int w = rightX - leftX + 1;
+            int h = bottomY - topY + 1;
+
+            TileBackup[,] backup = CaptureBackup(leftX, topY, w, h);
+            try
+            {
+                for (int x = leftX; x <= rightX; x++)
+                {
+                    SetPreviewBlock(x, topY, TileID.GrayBrick);
+                    SetPreviewBlock(x, bottomY, TileID.GrayBrick);
+                }
+
+                for (int y = topY + 1; y <= bottomY - 1; y++)
+                {
+                    if (y >= fy - 3 && y <= fy - 1)
+                    {
+                        SetPreviewEmpty(leftX, y);
+                        SetPreviewEmpty(rightX, y);
+                    }
+                    else
+                    {
+                        SetPreviewBlock(leftX, y, TileID.GrayBrick);
+                        SetPreviewBlock(rightX, y, TileID.GrayBrick);
+                    }
+                }
+
+                for (int y = topY + 1; y <= fy - 1; y++)
+                {
+                    for (int x = innerLeft; x <= innerRight; x++)
+                        SetPreviewEmpty(x, y, WallID.Glass);
+                }
+
+                for (int x = innerLeft; x <= innerRight; x++)
+                    SetPreviewPlatform(x, fy, 0, WallID.Glass);
+
+                for (int y = fy + 1; y <= fy + PondLiquidDepth; y++)
+                {
+                    for (int x = innerLeft; x <= innerRight; x++)
+                        SetPreviewLiquid(x, y, p.LiquidType, WallID.Glass);
+                }
+
+                SendLargeTileRectToPlayer(player, leftX, topY, w, h);
+            }
+            finally
+            {
+                RestoreBackup(leftX, topY, w, h, backup);
+            }
+
+            return new PreviewBox(leftX, topY, w, h);
+        }
+
+        // ---------------------------------------------------------------
         // Hellevator (TIDAK DIUBAH)
         // ---------------------------------------------------------------
 
@@ -439,6 +815,17 @@ namespace MagicBuilder
                 return;
             }
 
+            List<PreviewBox> oldPreviews;
+            lock (_lock)
+            {
+                Session s = GetSession(player.Index);
+                oldPreviews = new List<PreviewBox>(s.PreviewBoxes);
+                s.PreviewBoxes.Clear();
+            }
+            ClearPreviewBoxes(player, oldPreviews);
+
+            PreviewBox preview = ShowHellevatorPreview(player, cx, sy, ey);
+
             lock (_lock)
             {
                 Session s = GetSession(player.Index);
@@ -448,9 +835,10 @@ namespace MagicBuilder
                 s.PendingStartY = sy;
                 s.PendingEndY = ey;
                 s.PendingExpires = DateTime.UtcNow.AddSeconds(ConfirmSeconds);
+                s.PreviewBoxes.Add(preview);
             }
 
-            player.SendInfoMessage($"Hellevator: dari ({cx}, {sy}) turun sampai y = {ey} ({ey - sy + 1} tile), lebar total 5 (lubang 3 + brick 1 di tiap sisi), dengan tali di tengah.");
+            player.SendInfoMessage($"Preview Hellevator ditampilkan: dari ({cx}, {sy}) turun sampai y = {ey} ({ey - sy + 1} tile), lebar total 5.");
             player.SendWarningMessage($"Ini mengubah dunia dan BELUM ADA UNDO. Backup dunia dulu. Ketik /build confirm dalam {ConfirmSeconds} detik untuk mulai.");
         }
 
@@ -463,15 +851,20 @@ namespace MagicBuilder
             }
 
             List<(int X, int Y)> oldPoints = null;
+            List<PreviewBox> oldPreviews = null;
             int queued = 0;
             string kind = null;
 
             lock (_lock)
             {
                 Session s = GetSession(player.Index);
+                oldPreviews = new List<PreviewBox>(s.PreviewBoxes);
+                s.PreviewBoxes.Clear();
+
                 if (!s.HasPending || DateTime.UtcNow > s.PendingExpires)
                 {
                     s.HasPending = false;
+                    ClearPreviewBoxes(player, oldPreviews);
                     player.SendErrorMessage("Tidak ada pembangunan yang menunggu konfirmasi. Mulai lagi dengan /build hellevator, /build npchouse, /build arena, atau /build pond.");
                     return;
                 }
@@ -553,6 +946,7 @@ namespace MagicBuilder
                 s.Points.Clear();
             }
 
+            ClearPreviewBoxes(player, oldPreviews);
             foreach (var p in oldPoints)
                 player.SendTileRect((short)p.X, (short)p.Y, 1, 1);
 
@@ -569,12 +963,19 @@ namespace MagicBuilder
         private void CancelBuild(TSPlayer player)
         {
             int count = 0;
+            List<PreviewBox> oldPreviews;
             lock (_lock)
             {
                 Session s = GetSession(player.Index);
+                oldPreviews = new List<PreviewBox>(s.PreviewBoxes);
+                s.PreviewBoxes.Clear();
+
                 if (s.HasPending)
                 {
                     s.HasPending = false;
+                    s.PendingHouses = null;
+                    s.PendingArena = null;
+                    s.PendingPond = null;
                     count++;
                 }
                 foreach (BuildJob j in _jobs)
@@ -587,14 +988,54 @@ namespace MagicBuilder
                 }
             }
 
+            ClearPreviewBoxes(player, oldPreviews);
+
             if (count == 0)
                 player.SendInfoMessage("Tidak ada pembangunan untuk dibatalkan.");
             else
-                player.SendSuccessMessage("Dibatalkan. Bagian yang sudah dibangun tidak dikembalikan.");
+                player.SendSuccessMessage("Dibatalkan. Preview dihapus dan bagian yang sudah dibangun tidak dikembalikan.");
         }
 
         private void OnGameUpdate(EventArgs args)
         {
+            // Bersihkan preview otomatis jika waktu konfirmasi 60 detik sudah habis
+            List<(int PlayerIndex, List<PreviewBox> Boxes)> expiredPreviews = null;
+            DateTime now = DateTime.UtcNow;
+            lock (_lock)
+            {
+                foreach (var kv in _sessions)
+                {
+                    Session s = kv.Value;
+                    if (s.HasPending && now > s.PendingExpires)
+                    {
+                        s.HasPending = false;
+                        s.PendingHouses = null;
+                        s.PendingArena = null;
+                        s.PendingPond = null;
+                        if (s.PreviewBoxes.Count > 0)
+                        {
+                            if (expiredPreviews == null)
+                                expiredPreviews = new List<(int, List<PreviewBox>)>();
+                            expiredPreviews.Add((kv.Key, new List<PreviewBox>(s.PreviewBoxes)));
+                            s.PreviewBoxes.Clear();
+                        }
+                    }
+                }
+            }
+
+            if (expiredPreviews != null)
+            {
+                foreach (var item in expiredPreviews)
+                {
+                    TSPlayer p = TShock.Players[item.PlayerIndex];
+                    if (p != null && p.Active)
+                    {
+                        ClearPreviewBoxes(p, item.Boxes);
+                        p.SendInfoMessage("Waktu konfirmasi habis, preview build dihapus.");
+                    }
+                }
+            }
+
             BuildJob job;
             lock (_lock)
             {
@@ -800,7 +1241,7 @@ namespace MagicBuilder
         }
 
         // ---------------------------------------------------------------
-        // Fishing Pond (1 Titik, 25x13 = 325 tile cairan, Gray Brick + Glass Wall + Biome Torch)
+        // Fishing Pond (TIDAK DIUBAH)
         // ---------------------------------------------------------------
 
         private void PreparePond(TSPlayer player, List<string> parameters)
@@ -898,6 +1339,17 @@ namespace MagicBuilder
                 Style = style
             };
 
+            List<PreviewBox> oldPreviews;
+            lock (_lock)
+            {
+                Session s = GetSession(player.Index);
+                oldPreviews = new List<PreviewBox>(s.PreviewBoxes);
+                s.PreviewBoxes.Clear();
+            }
+            ClearPreviewBoxes(player, oldPreviews);
+
+            PreviewBox preview = ShowPondPreview(player, spec);
+
             lock (_lock)
             {
                 Session s = GetSession(player.Index);
@@ -905,9 +1357,10 @@ namespace MagicBuilder
                 s.PendingKind = "pond";
                 s.PendingPond = spec;
                 s.PendingExpires = DateTime.UtcNow.AddSeconds(ConfirmSeconds);
+                s.PreviewBoxes.Add(preview);
             }
 
-            player.SendInfoMessage($"Kolam Pancing: cairan {liquidName} (25x13 = 325 tile, 100% fishing power) di ({cx}, {fy}), Gray Brick + Glass Wall, torch biome {style.Name}.");
+            player.SendInfoMessage($"Preview Kolam Pancing ditampilkan: cairan {liquidName} (25x13 = 325 tile, 100% fishing power) di ({cx}, {fy}), Gray Brick + Glass Wall, torch biome {style.Name}.");
             player.SendWarningMessage($"Ini mengubah dunia dan BELUM ADA UNDO. Backup dunia dulu. Ketik /build confirm dalam {ConfirmSeconds} detik untuk mulai.");
         }
 
@@ -925,7 +1378,6 @@ namespace MagicBuilder
             int topY = fy - PondRoomHeight - 1;        // fy - 6
             int bottomY = fy + PondLiquidDepth + 1;    // fy + 14
 
-            // 1. Bersihkan seluruh area + reset cairan lama agar tidak tercampur (obsidian/honey block)
             for (int y = topY; y <= bottomY; y++)
             {
                 for (int x = leftX; x <= rightX; x++)
@@ -940,7 +1392,6 @@ namespace MagicBuilder
                 }
             }
 
-            // 2. Bangun struktur tertutup Gray Brick (atap, dinding kiri-kanan, dan bak kolam bawah)
             for (int x = leftX; x <= rightX; x++)
             {
                 PlaceBlock(job, x, topY, TileID.GrayBrick);
@@ -953,7 +1404,6 @@ namespace MagicBuilder
                 PlaceBlock(job, rightX, y, TileID.GrayBrick);
             }
 
-            // 3. Pasang Glass Wall di seluruh bagian dalam (ruang atas maupun belakang kolam)
             for (int y = topY + 1; y <= bottomY - 1; y++)
             {
                 for (int x = innerLeft; x <= innerRight; x++)
@@ -965,7 +1415,6 @@ namespace MagicBuilder
                 }
             }
 
-            // 4. Isi cairan penuh (25 x 13 = 325 tile) di bak kolam (fy + 1 .. fy + 13)
             for (int y = fy + 1; y <= fy + PondLiquidDepth; y++)
             {
                 for (int x = innerLeft; x <= innerRight; x++)
@@ -979,13 +1428,11 @@ namespace MagicBuilder
                 }
             }
 
-            // 5. Pasang jembatan Platform di permukaan air (y = fy)
             for (int x = innerLeft; x <= innerRight; x++)
             {
                 PlacePlatform(job, x, fy, 0);
             }
 
-            // 6. Pasang Pintu kiri & kanan di atas permukaan (fy - 3 .. fy - 1) agar tertutup rapat tapi tetap bisa dilewati
             for (int y = fy - 3; y <= fy - 1; y++)
             {
                 ClearTile(job, leftX, y);
@@ -996,7 +1443,6 @@ namespace MagicBuilder
             if (!WorldGen.PlaceDoor(rightX, fy - 2, TileID.ClosedDoor, 0))
                 job.ObjectFailed++;
 
-            // 7. Pasang Torch sesuai biome di dinding kaca ruang atas (y = fy - 4)
             int[] torchXs = { innerLeft, cx - 6, cx, cx + 6, innerRight };
             foreach (int tx in torchXs)
             {
@@ -1010,7 +1456,7 @@ namespace MagicBuilder
         }
 
         // ---------------------------------------------------------------
-        // Boss Arena (2 Titik + Jarak Platform Custom + Buff Dempet + Asphalt Post-Mech - TIDAK DIUBAH)
+        // Boss Arena (TIDAK DIUBAH)
         // ---------------------------------------------------------------
 
         private void PrepareArena(TSPlayer player, List<string> parameters)
@@ -1128,6 +1574,17 @@ namespace MagicBuilder
                 Style = style
             };
 
+            List<PreviewBox> oldPreviews;
+            lock (_lock)
+            {
+                Session s = GetSession(player.Index);
+                oldPreviews = new List<PreviewBox>(s.PreviewBoxes);
+                s.PreviewBoxes.Clear();
+            }
+            ClearPreviewBoxes(player, oldPreviews);
+
+            PreviewBox preview = ShowArenaPreview(player, spec);
+
             lock (_lock)
             {
                 Session s = GetSession(player.Index);
@@ -1135,13 +1592,14 @@ namespace MagicBuilder
                 s.PendingKind = "arena";
                 s.PendingArena = spec;
                 s.PendingExpires = DateTime.UtcNow.AddSeconds(ConfirmSeconds);
+                s.PreviewBoxes.Add(preview);
             }
 
             string floorInfo = useAsphalt
                 ? "Asphalt (Hardmode + Mech Boss aktif)"
                 : "Dibiarkan asli (belum Hardmode + 1 Mech Boss)";
 
-            player.SendInfoMessage($"Boss Arena: lebar {width} tile ({leftX}..{rightX}), {tiers} tingkat platform (jarak {spacing} tile), biome {style.Name}, lantai bawah: {floorInfo}.");
+            player.SendInfoMessage($"Preview Boss Arena ditampilkan: lebar {width} tile ({leftX}..{rightX}), {tiers} tingkat platform (jarak {spacing} tile), biome {style.Name}, lantai bawah: {floorInfo}.");
             player.SendWarningMessage($"Ini mengubah dunia dan BELUM ADA UNDO. Backup dunia dulu. Ketik /build confirm dalam {ConfirmSeconds} detik untuk mulai.");
         }
 
@@ -1280,7 +1738,7 @@ namespace MagicBuilder
         }
 
         // ---------------------------------------------------------------
-        // Rumah NPC (Simpel 11x7 bertingkat 1/2/3 - TIDAK DIUBAH)
+        // Rumah NPC (TIDAK DIUBAH)
         // ---------------------------------------------------------------
 
         private void PrepareNpcHouses(TSPlayer player, List<string> parameters)
@@ -1370,6 +1828,19 @@ namespace MagicBuilder
                 specs.Add(new HouseSpec { X = cx, Y = fy, Floors = floors, Style = DetectHouseStyle(cx, fy) });
             }
 
+            List<PreviewBox> oldPreviews;
+            lock (_lock)
+            {
+                Session s = GetSession(player.Index);
+                oldPreviews = new List<PreviewBox>(s.PreviewBoxes);
+                s.PreviewBoxes.Clear();
+            }
+            ClearPreviewBoxes(player, oldPreviews);
+
+            var newPreviews = new List<PreviewBox>();
+            foreach (HouseSpec spec in specs)
+                newPreviews.Add(ShowHousePreview(player, spec));
+
             lock (_lock)
             {
                 Session s = GetSession(player.Index);
@@ -1377,10 +1848,11 @@ namespace MagicBuilder
                 s.PendingKind = "house";
                 s.PendingHouses = specs;
                 s.PendingExpires = DateTime.UtcNow.AddSeconds(ConfirmSeconds);
+                s.PreviewBoxes.AddRange(newPreviews);
             }
 
             for (int i = 0; i < specs.Count; i++)
-                player.SendInfoMessage($"Rumah {i + 1}: {specs[i].Floors} tingkat di ({specs[i].X}, {specs[i].Y}), biome {specs[i].Style.Name}.");
+                player.SendInfoMessage($"Preview Rumah {i + 1}: {specs[i].Floors} tingkat di ({specs[i].X}, {specs[i].Y}), biome {specs[i].Style.Name}.");
 
             player.SendWarningMessage($"Ini mengubah dunia dan BELUM ADA UNDO. Backup dunia dulu. Ketik /build confirm dalam {ConfirmSeconds} detik untuk mulai.");
         }
