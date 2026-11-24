@@ -14,7 +14,7 @@ namespace MagicBuilder
     {
         public override string Name => "MagicBuilder";
         public override string Author => "You";
-        public override Version Version => new Version(1, 1, 2, 0);
+        public override Version Version => new Version(1, 1, 3, 0);
         public override string Description => "Pilih titik pakai Ice Rod dan bangun struktur otomatis.";
 
         private const string UsePermission = "magicbuilder.use";
@@ -752,7 +752,7 @@ namespace MagicBuilder
         }
 
         // ---------------------------------------------------------------
-        // Boss Arena (2 Titik + Jarak Platform Custom + Buff Stations + Asphalt Post-Mech)
+        // Boss Arena (2 Titik + Jarak Platform Custom + Buff Dempet + Asphalt Post-Mech)
         // ---------------------------------------------------------------
 
         private void PrepareArena(TSPlayer player, List<string> parameters)
@@ -896,7 +896,7 @@ namespace MagicBuilder
             for (int i = 0; i < count; i++)
             {
                 int bx = a.LeftX + (int)Math.Round((i + 0.5) * width / count);
-                bx = Math.Max(a.LeftX + 6, Math.Min(a.RightX - 7, bx));
+                bx = Math.Max(a.LeftX + 4, Math.Min(a.RightX - 4, bx));
                 if (!centers.Contains(bx))
                     centers.Add(bx);
             }
@@ -940,7 +940,7 @@ namespace MagicBuilder
             if (job.NextX <= a.RightX)
                 return false;
 
-            // Tahap akhir: pasang Buff Stations & Torch langsung di platform
+            // Tahap akhir: pasang Buff Stations (dempet) & Torch langsung di platform
             List<int> buffCenters = GetArenaBuffCenters(a);
             PlaceArenaBuffsAndLights(job, buffCenters);
             return true;
@@ -951,48 +951,47 @@ namespace MagicBuilder
             ArenaSpec a = job.Arena;
             HouseStyle st = job.Style;
 
-            // Buff di lantai bawah jika memakai Asphalt
+            // Buff dempet di lantai bawah jika memakai Asphalt
             if (a.UseAsphalt)
             {
                 foreach (int bx in buffCenters)
                 {
-                    if (!WorldGen.PlaceObject(bx, a.BottomY - 1, TileID.Campfire, true, st.Campfire))
+                    // Campfire di bx-2..bx, langsung dempet dengan Bast Statue di bx+1..bx+2
+                    if (!WorldGen.PlaceObject(bx - 1, a.BottomY - 1, TileID.Campfire, true, st.Campfire))
                         job.ObjectFailed++;
 
-                    if (!WorldGen.PlaceObject(bx + 4, a.BottomY - 1, BastStatueTileType, true))
+                    if (!WorldGen.PlaceObject(bx + 1, a.BottomY - 1, BastStatueTileType, true))
                         job.ObjectFailed++;
                 }
             }
 
-            // Buff & penerangan di setiap tingkat platform
+            // Buff dempet & penerangan di setiap tingkat platform
             foreach (int tierY in a.TierYs)
             {
                 foreach (int bx in buffCenters)
                 {
-                    // Campfire duduk di atas platform (bx-1 .. bx+1)
-                    if (!WorldGen.PlaceObject(bx, tierY - 1, TileID.Campfire, true, st.Campfire))
+                    // Atas platform: Campfire (bx-2..bx) dempet langsung dengan Bast Statue (bx+1..bx+2)
+                    if (!WorldGen.PlaceObject(bx - 1, tierY - 1, TileID.Campfire, true, st.Campfire))
                         job.ObjectFailed++;
 
-                    // Bast Statue duduk di atas platform (bx+4 .. bx+5)
-                    if (!WorldGen.PlaceObject(bx + 4, tierY - 1, BastStatueTileType, true))
+                    if (!WorldGen.PlaceObject(bx + 1, tierY - 1, BastStatueTileType, true))
                         job.ObjectFailed++;
 
-                    // Heart Lantern menggantung langsung di bawah platform (bx-3)
-                    if (!WorldGen.PlaceObject(bx - 3, tierY + 1, TileID.HangingLanterns, true, HeartLanternStyle))
+                    // Bawah platform: Heart Lantern (bx) dempet langsung dengan Star in a Bottle (bx+1)
+                    if (!WorldGen.PlaceObject(bx, tierY + 1, TileID.HangingLanterns, true, HeartLanternStyle))
                         job.ObjectFailed++;
 
-                    // Star in a Bottle menggantung langsung di bawah platform (bx+2)
-                    if (!WorldGen.PlaceObject(bx + 2, tierY + 1, TileID.HangingLanterns, true, StarInBottleStyle))
+                    if (!WorldGen.PlaceObject(bx + 1, tierY + 1, TileID.HangingLanterns, true, StarInBottleStyle))
                         job.ObjectFailed++;
                 }
 
-                // Torch penerangan di sepanjang platform (menghindari area buff station)
+                // Torch penerangan di sepanjang platform (menghindari area buff station bx-2..bx+2)
                 for (int x = a.LeftX + 2; x <= a.RightX - 2; x += ArenaTorchInterval)
                 {
                     bool nearBuff = false;
                     foreach (int bx in buffCenters)
                     {
-                        if (Math.Abs(x - bx) <= 6)
+                        if (Math.Abs(x - bx) <= 3)
                         {
                             nearBuff = true;
                             break;
@@ -1007,10 +1006,10 @@ namespace MagicBuilder
                 }
             }
 
-            // Sinkronisasi tampilan seluruh baris platform (atas dan bawah platform)
+            // Kirim rect penuh tierY-3 .. tierY+2 (tinggi 6) agar seluruh 3 tile tinggi Bast Statue & 2 tile lentera tampil utuh di client
             foreach (int tierY in a.TierYs)
             {
-                SendLargeTileRect(a.LeftX, tierY - 2, a.RightX - a.LeftX + 1, 5);
+                SendLargeTileRect(a.LeftX, tierY - 3, a.RightX - a.LeftX + 1, 6);
             }
 
             if (a.UseAsphalt)
