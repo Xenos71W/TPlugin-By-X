@@ -14,7 +14,7 @@ namespace MagicBuilder
     {
         public override string Name => "MagicBuilder";
         public override string Author => "You";
-        public override Version Version => new Version(1, 0, 0, 0);
+        public override Version Version => new Version(1, 1, 0, 0);
         public override string Description => "Pilih titik pakai Ice Rod dan bangun struktur otomatis.";
 
         private const string UsePermission = "magicbuilder.use";
@@ -38,9 +38,25 @@ namespace MagicBuilder
         private const int RowsPerTick = 8;
         private const int ConfirmSeconds = 60;
 
-        // --- Rumah NPC (11 lebar x 7 tinggi per lantai) ---
+        // --- Rumah NPC (11 lebar x 7 tinggi per lantai - TIDAK DIUBAH) ---
         private const int HouseHalfWidth = 5; // 5 + 1 + 5 = 11 tile
         private const int FloorStepHeight = 6; // +1 lantai dasar = 7 tile per tingkat
+
+        // --- Boss Arena ---
+        private const int ArenaColsPerTick = 12;
+        private const int ArenaMinWidth = 20;
+        private const int ArenaMaxWidth = 600;
+        private const int ArenaMinSpacing = 8;
+        private const int ArenaMaxSpacing = 40;
+        private const int ArenaDefaultTiers = 3;
+        private const int ArenaBuffInterval = 70;
+        private const int ArenaTorchInterval = 14;
+
+        private const ushort AsphaltTileType = 226;
+        private const ushort CampfireTileType = 215;
+        private const ushort HeartLanternTileType = 372;
+        private const ushort StarInBottleTileType = 373;
+        private const ushort BastStatueTileType = 506;
 
         private static readonly HashSet<int> DebugPackets = new HashSet<int> { 17, 27, 29 };
 
@@ -52,6 +68,7 @@ namespace MagicBuilder
             public bool HasPending;
             public string PendingKind;
             public List<HouseSpec> PendingHouses;
+            public ArenaSpec PendingArena;
             public int PendingX;
             public int PendingStartY;
             public int PendingEndY;
@@ -68,8 +85,9 @@ namespace MagicBuilder
             public int Table;
             public int Chair;
             public int Torch;
+            public int Campfire;
 
-            public HouseStyle(string name, ushort block, ushort wall, int platform, ushort tableTile, int table, int chair, int torch)
+            public HouseStyle(string name, ushort block, ushort wall, int platform, ushort tableTile, int table, int chair, int torch, int campfire)
             {
                 Name = name;
                 Block = block;
@@ -79,6 +97,7 @@ namespace MagicBuilder
                 Table = table;
                 Chair = chair;
                 Torch = torch;
+                Campfire = campfire;
             }
         }
 
@@ -90,23 +109,37 @@ namespace MagicBuilder
             public HouseStyle Style;
         }
 
+        private class ArenaSpec
+        {
+            public int LeftX;
+            public int RightX;
+            public int TopY;
+            public int BottomY;
+            public int Spacing;
+            public List<int> TierYs;
+            public bool UseAsphalt;
+            public HouseStyle Style;
+        }
+
         private static readonly Dictionary<string, HouseStyle> HouseStyles = new Dictionary<string, HouseStyle>
         {
-            ["forest"]     = new HouseStyle("Forest",     TileID.WoodBlock,       WallID.Wood,            0,  TileID.Tables,  0,  0,  0),
-            ["snow"]       = new HouseStyle("Snow",       TileID.BorealWood,      WallID.BorealWood,      19, TileID.Tables,  28, 30, 9),
-            ["desert"]     = new HouseStyle("Desert",     TileID.SmoothSandstone, WallID.SmoothSandstone, 42, TileID.Tables2, 1,  39, 16),
-            ["jungle"]     = new HouseStyle("Jungle",     TileID.RichMahogany,    WallID.RichMaogany,     2,  TileID.Tables,  2,  2,  21),
-            ["ocean"]      = new HouseStyle("Ocean",      TileID.PalmWood,        WallID.PalmWood,        17, TileID.Tables,  26, 29, 23),
-            ["hallow"]     = new HouseStyle("Hallow",     TileID.Pearlwood,       WallID.Pearlwood,       3,  TileID.Tables,  3,  3,  20),
-            ["cavern"]     = new HouseStyle("Cavern",     TileID.GrayBrick,       WallID.GrayBrick,       0,  TileID.Tables,  0,  0,  0),
-            ["underworld"] = new HouseStyle("Underworld", TileID.ObsidianBrick,   WallID.ObsidianBrick,   13, TileID.Tables,  13, 16, 7),
+            ["forest"]     = new HouseStyle("Forest",     TileID.WoodBlock,       WallID.Wood,            0,  TileID.Tables,  0,  0,  0,  0),
+            ["snow"]       = new HouseStyle("Snow",       TileID.BorealWood,      WallID.BorealWood,      19, TileID.Tables,  28, 30, 9,  3),
+            ["desert"]     = new HouseStyle("Desert",     TileID.SmoothSandstone, WallID.SmoothSandstone, 42, TileID.Tables2, 1,  39, 16, 11),
+            ["jungle"]     = new HouseStyle("Jungle",     TileID.RichMahogany,    WallID.RichMaogany,     2,  TileID.Tables,  2,  2,  21, 13),
+            ["ocean"]      = new HouseStyle("Ocean",      TileID.PalmWood,        WallID.PalmWood,        17, TileID.Tables,  26, 29, 23, 8),
+            ["hallow"]     = new HouseStyle("Hallow",     TileID.Pearlwood,       WallID.Pearlwood,       3,  TileID.Tables,  3,  3,  20, 12),
+            ["cavern"]     = new HouseStyle("Cavern",     TileID.GrayBrick,       WallID.GrayBrick,       0,  TileID.Tables,  0,  0,  0,  0),
+            ["underworld"] = new HouseStyle("Underworld", TileID.ObsidianBrick,   WallID.ObsidianBrick,   13, TileID.Tables,  13, 16, 7,  2),
         };
 
         private class BuildJob
         {
-            public bool IsHouse;
+            public string Kind; // "hellevator", "house", "arena"
             public int Floors;
             public HouseStyle Style;
+            public ArenaSpec Arena;
+            public int NextX;
             public int ObjectFailed;
             public int PlayerIndex;
             public string PlayerName;
@@ -263,6 +296,10 @@ namespace MagicBuilder
                     PrepareNpcHouses(player, args.Parameters);
                     break;
 
+                case "arena":
+                    PrepareArena(player, args.Parameters);
+                    break;
+
                 case "confirm":
                     ConfirmBuild(player);
                     break;
@@ -292,7 +329,7 @@ namespace MagicBuilder
                 }
 
                 default:
-                    player.SendInfoMessage("Pemakaian: /build select | points | remove <n> | clear | hellevator | npchouse [1|2|3] | confirm | cancel");
+                    player.SendInfoMessage("Pemakaian: /build select | points | remove <n> | clear | hellevator | npchouse [1|2|3] | arena <jarak> [tingkat] | confirm | cancel");
                     break;
             }
         }
@@ -416,7 +453,7 @@ namespace MagicBuilder
                 if (!s.HasPending || DateTime.UtcNow > s.PendingExpires)
                 {
                     s.HasPending = false;
-                    player.SendErrorMessage("Tidak ada pembangunan yang menunggu konfirmasi. Mulai lagi dengan /build hellevator atau /build npchouse.");
+                    player.SendErrorMessage("Tidak ada pembangunan yang menunggu konfirmasi. Mulai lagi dengan /build hellevator, /build npchouse, atau /build arena.");
                     return;
                 }
 
@@ -428,9 +465,9 @@ namespace MagicBuilder
                     {
                         _jobs.Enqueue(new BuildJob
                         {
+                            Kind = "house",
                             PlayerIndex = player.Index,
                             PlayerName = player.Name,
-                            IsHouse = true,
                             Floors = h.Floors,
                             Style = h.Style,
                             X = h.X,
@@ -441,10 +478,27 @@ namespace MagicBuilder
                         queued++;
                     }
                 }
+                else if (kind == "arena" && s.PendingArena != null)
+                {
+                    ArenaSpec a = s.PendingArena;
+                    _jobs.Enqueue(new BuildJob
+                    {
+                        Kind = "arena",
+                        PlayerIndex = player.Index,
+                        PlayerName = player.Name,
+                        Style = a.Style,
+                        Arena = a,
+                        X = a.LeftX,
+                        EndY = a.RightX,
+                        NextX = a.LeftX
+                    });
+                    queued = 1;
+                }
                 else
                 {
                     _jobs.Enqueue(new BuildJob
                     {
+                        Kind = "hellevator",
                         PlayerIndex = player.Index,
                         PlayerName = player.Name,
                         X = s.PendingX,
@@ -457,6 +511,7 @@ namespace MagicBuilder
 
                 s.HasPending = false;
                 s.PendingHouses = null;
+                s.PendingArena = null;
                 oldPoints = new List<(int X, int Y)>(s.Points);
                 s.Points.Clear();
             }
@@ -466,6 +521,8 @@ namespace MagicBuilder
 
             if (kind == "house")
                 player.SendSuccessMessage($"Membangun {queued} bangunan rumah NPC. Pakai /build cancel untuk menghentikan sisanya.");
+            else if (kind == "arena")
+                player.SendSuccessMessage("Pembangunan Boss Arena dimulai. Pakai /build cancel untuk menghentikan.");
             else
                 player.SendSuccessMessage("Pembangunan hellevator dimulai. Pakai /build cancel untuk menghentikan.");
         }
@@ -516,10 +573,14 @@ namespace MagicBuilder
                 {
                     finished = true;
                 }
-                else if (job.IsHouse)
+                else if (job.Kind == "house")
                 {
                     BuildNpcHouse(job);
                     finished = true;
+                }
+                else if (job.Kind == "arena")
+                {
+                    finished = StepArenaBuild(job);
                 }
                 else
                 {
@@ -566,9 +627,13 @@ namespace MagicBuilder
                     owner.SendInfoMessage("Pembangunan dihentikan.");
                 else
                 {
-                    owner.SendSuccessMessage(job.IsHouse
-                        ? $"Rumah NPC ({job.Style.Name}, {job.Floors} tingkat) di ({job.X}, {job.StartY}) selesai."
-                        : "Hellevator selesai.");
+                    if (job.Kind == "house")
+                        owner.SendSuccessMessage($"Rumah NPC ({job.Style.Name}, {job.Floors} tingkat) di ({job.X}, {job.StartY}) selesai.");
+                    else if (job.Kind == "arena")
+                        owner.SendSuccessMessage($"Boss Arena ({job.Style.Name}, {job.Arena.TierYs.Count} tingkat platform) selesai.");
+                    else
+                        owner.SendSuccessMessage("Hellevator selesai.");
+
                     if (job.Blocked > 0)
                         owner.SendWarningMessage($"{job.Blocked} tile tidak bisa dihancurkan (misalnya peti berisi), jadi ada celah.");
                     if (job.TorchFailed > 0)
@@ -576,11 +641,11 @@ namespace MagicBuilder
                     if (job.RopeFailed > 0)
                         owner.SendWarningMessage($"{job.RopeFailed} tile tali gagal dipasang.");
                     if (job.ObjectFailed > 0)
-                        owner.SendWarningMessage($"{job.ObjectFailed} furnitur gagal dipasang.");
+                        owner.SendWarningMessage($"{job.ObjectFailed} furnitur/buff station gagal dipasang.");
                 }
             }
 
-            TShock.Log.ConsoleInfo($"[MagicBuilder] {(job.IsHouse ? $"Rumah({job.Floors}L)" : "Hellevator")} {job.PlayerName} x={job.X} y={job.StartY}..{job.EndY} selesai (blocked={job.Blocked}, objFailed={job.ObjectFailed}, cancelled={job.Cancelled}, error={error ?? "-"})");
+            TShock.Log.ConsoleInfo($"[MagicBuilder] {job.Kind} {job.PlayerName} selesai (blocked={job.Blocked}, objFailed={job.ObjectFailed}, cancelled={job.Cancelled}, error={error ?? "-"})");
         }
 
         private void BuildRow(BuildJob job, int y)
@@ -689,7 +754,307 @@ namespace MagicBuilder
         }
 
         // ---------------------------------------------------------------
-        // Rumah NPC (Simpel 11x7 bertingkat 1/2/3 + Deteksi Biome Otomatis)
+        // Boss Arena (2 Titik + Jarak Platform Custom + Buff Stations + Asphalt Post-Mech)
+        // ---------------------------------------------------------------
+
+        private void PrepareArena(TSPlayer player, List<string> parameters)
+        {
+            if (!player.HasPermission(BuildPermission))
+            {
+                player.SendErrorMessage("Kamu tidak punya permission " + BuildPermission);
+                return;
+            }
+
+            if (parameters.Count < 2 || parameters.Count > 3)
+            {
+                player.SendErrorMessage("Pemakaian: /build arena <jarak_platform> [jumlah_tingkat]");
+                return;
+            }
+
+            int spacing;
+            if (!int.TryParse(parameters[1], out spacing) || spacing < ArenaMinSpacing || spacing > ArenaMaxSpacing)
+            {
+                player.SendErrorMessage($"Jarak tinggi per platform harus angka antara {ArenaMinSpacing} sampai {ArenaMaxSpacing} tile.");
+                return;
+            }
+
+            int forcedTiers = 0;
+            if (parameters.Count == 3)
+            {
+                if (!int.TryParse(parameters[2], out forcedTiers) || forcedTiers < 1 || forcedTiers > 15)
+                {
+                    player.SendErrorMessage("Jumlah tingkat platform harus antara 1 sampai 15.");
+                    return;
+                }
+            }
+
+            List<(int X, int Y)> points;
+            lock (_lock)
+            {
+                points = new List<(int X, int Y)>(GetSession(player.Index).Points);
+
+                foreach (BuildJob j in _jobs)
+                {
+                    if (j.PlayerIndex == player.Index && !j.Cancelled)
+                    {
+                        player.SendErrorMessage("Kamu masih punya pembangunan yang berjalan. Tunggu selesai atau /build cancel.");
+                        return;
+                    }
+                }
+            }
+
+            if (points.Count < 2)
+            {
+                player.SendErrorMessage("Butuh 2 titik untuk menentukan panjang arena. Pakai /build select lalu klik 2 titik dengan Ice Rod.");
+                return;
+            }
+
+            int leftX = Math.Min(points[0].X, points[1].X);
+            int rightX = Math.Max(points[0].X, points[1].X);
+            int width = rightX - leftX + 1;
+
+            if (width < ArenaMinWidth || width > ArenaMaxWidth)
+            {
+                player.SendErrorMessage($"Panjang arena harus antara {ArenaMinWidth} sampai {ArenaMaxWidth} tile (sekarang: {width} tile).");
+                return;
+            }
+
+            int bottomY = Math.Max(points[0].Y, points[1].Y);
+            int topPointY = Math.Min(points[0].Y, points[1].Y);
+
+            int tiers;
+            if (forcedTiers > 0)
+                tiers = forcedTiers;
+            else if (bottomY - topPointY >= spacing)
+                tiers = (bottomY - topPointY) / spacing;
+            else
+                tiers = ArenaDefaultTiers;
+
+            var tierYs = new List<int>();
+            for (int t = 1; t <= tiers; t++)
+            {
+                tierYs.Add(bottomY - (t * spacing));
+            }
+
+            // Ruang bersih 4 tile di atas platform tertinggi untuk Bast Statue & lompatan
+            int topY = tierYs[tierYs.Count - 1] - 4;
+
+            if (leftX < 5 || rightX >= Main.maxTilesX - 5 || topY < 5 || bottomY >= Main.maxTilesY - 5)
+            {
+                player.SendErrorMessage("Area arena terlalu dekat tepi dunia.");
+                return;
+            }
+
+            for (int x = leftX; x <= rightX; x++)
+            {
+                for (int y = topY; y <= bottomY; y++)
+                {
+                    if (!player.HasBuildPermission(x, y, false))
+                    {
+                        player.SendErrorMessage($"Kamu tidak boleh membangun di ({x}, {y}) (region/spawn protection). Dibatalkan.");
+                        return;
+                    }
+                }
+            }
+
+            int midX = (leftX + rightX) / 2;
+            HouseStyle style = DetectHouseStyle(midX, bottomY);
+            bool useAsphalt = Main.hardMode && NPC.downedMechBossAny;
+
+            var spec = new ArenaSpec
+            {
+                LeftX = leftX,
+                RightX = rightX,
+                TopY = topY,
+                BottomY = bottomY,
+                Spacing = spacing,
+                TierYs = tierYs,
+                UseAsphalt = useAsphalt,
+                Style = style
+            };
+
+            lock (_lock)
+            {
+                Session s = GetSession(player.Index);
+                s.HasPending = true;
+                s.PendingKind = "arena";
+                s.PendingArena = spec;
+                s.PendingExpires = DateTime.UtcNow.AddSeconds(ConfirmSeconds);
+            }
+
+            string floorInfo = useAsphalt
+                ? "Asphalt (Hardmode + Mech Boss aktif)"
+                : "Dibiarkan asli (belum Hardmode + 1 Mech Boss)";
+
+            player.SendInfoMessage($"Boss Arena: lebar {width} tile ({leftX}..{rightX}), {tiers} tingkat platform (jarak {spacing} tile), biome {style.Name}, lantai bawah: {floorInfo}.");
+            player.SendWarningMessage($"Ini mengubah dunia dan BELUM ADA UNDO. Backup dunia dulu. Ketik /build confirm dalam {ConfirmSeconds} detik untuk mulai.");
+        }
+
+        private List<int> GetArenaBuffCenters(ArenaSpec a)
+        {
+            var centers = new List<int>();
+            int width = a.RightX - a.LeftX + 1;
+            int count = Math.Max(1, width / ArenaBuffInterval);
+
+            for (int i = 0; i < count; i++)
+            {
+                int bx = a.LeftX + (int)Math.Round((i + 0.5) * width / count);
+                bx = Math.Max(a.LeftX + 6, Math.Min(a.RightX - 7, bx));
+                if (!centers.Contains(bx))
+                    centers.Add(bx);
+            }
+            return centers;
+        }
+
+        private bool StepArenaBuild(BuildJob job)
+        {
+            ArenaSpec a = job.Arena;
+            HouseStyle st = job.Style;
+            List<int> buffCenters = GetArenaBuffCenters(a);
+
+            int xStart = job.NextX;
+            int cols = 0;
+
+            while (cols < ArenaColsPerTick && job.NextX <= a.RightX)
+            {
+                int x = job.NextX;
+
+                // Bersihkan seluruh ruang di atas lantai bawah (topY .. bottomY - 1)
+                for (int y = a.TopY; y <= a.BottomY - 1; y++)
+                    ClearTile(job, x, y);
+
+                // Lantai paling bawah: Asphalt jika Hardmode + >=1 Mech Boss, selain itu biarkan blok asli
+                if (a.UseAsphalt)
+                    PlaceBlock(job, x, a.BottomY, AsphaltTileType);
+
+                // Pasang tiap tingkat platform (dengan blok solid 1 tile di bx-3 & bx+3 sebagai gantungan Heart Lantern & Star in a Bottle)
+                bool isLanternAnchor = false;
+                foreach (int bx in buffCenters)
+                {
+                    if (x == bx - 3 || x == bx + 3)
+                    {
+                        isLanternAnchor = true;
+                        break;
+                    }
+                }
+
+                foreach (int tierY in a.TierYs)
+                {
+                    if (isLanternAnchor)
+                        PlaceBlock(job, x, tierY, st.Block);
+                    else
+                        PlacePlatform(job, x, tierY, st.Platform);
+                }
+
+                job.NextX++;
+                cols++;
+            }
+
+            if (cols > 0)
+            {
+                int rectHeight = a.BottomY - a.TopY + 1;
+                SendLargeTileRect(xStart, a.TopY, cols, rectHeight);
+            }
+
+            if (job.NextX <= a.RightX)
+                return false;
+
+            // Tahap akhir: pasang Buff Stations & Torch setelah semua platform selesai dibangun
+            PlaceArenaBuffsAndLights(job, buffCenters);
+            return true;
+        }
+
+        private void PlaceArenaBuffsAndLights(BuildJob job, List<int> buffCenters)
+        {
+            ArenaSpec a = job.Arena;
+            HouseStyle st = job.Style;
+
+            // Buff di lantai bawah jika memakai Asphalt
+            if (a.UseAsphalt)
+            {
+                foreach (int bx in buffCenters)
+                {
+                    if (!WorldGen.PlaceObject(bx, a.BottomY - 1, CampfireTileType, true, st.Campfire))
+                        job.ObjectFailed++;
+
+                    if (!WorldGen.PlaceObject(bx + 5, a.BottomY - 1, BastStatueTileType, true))
+                        job.ObjectFailed++;
+                }
+            }
+
+            // Buff & penerangan di setiap tingkat platform
+            foreach (int tierY in a.TierYs)
+            {
+                foreach (int bx in buffCenters)
+                {
+                    // Campfire duduk di atas platform (bx-1 .. bx+1)
+                    if (!WorldGen.PlaceObject(bx, tierY - 1, CampfireTileType, true, st.Campfire))
+                        job.ObjectFailed++;
+
+                    // Bast Statue duduk di atas platform (bx+5 .. bx+6)
+                    if (!WorldGen.PlaceObject(bx + 5, tierY - 1, BastStatueTileType, true))
+                        job.ObjectFailed++;
+
+                    // Heart Lantern menggantung di bawah blok solid (bx-3, tierY)
+                    if (!WorldGen.PlaceObject(bx - 3, tierY + 1, HeartLanternTileType, true))
+                        job.ObjectFailed++;
+
+                    // Star in a Bottle menggantung di bawah blok solid (bx+3, tierY)
+                    if (!WorldGen.PlaceObject(bx + 3, tierY + 1, StarInBottleTileType, true))
+                        job.ObjectFailed++;
+                }
+
+                // Torch penerangan di sepanjang platform (menghindari area buff station)
+                for (int x = a.LeftX + 2; x <= a.RightX - 2; x += ArenaTorchInterval)
+                {
+                    bool nearBuff = false;
+                    foreach (int bx in buffCenters)
+                    {
+                        if (Math.Abs(x - bx) <= 7)
+                        {
+                            nearBuff = true;
+                            break;
+                        }
+                    }
+
+                    if (!nearBuff)
+                    {
+                        if (!WorldGen.PlaceTile(x, tierY - 1, TileID.Torches, true, true, -1, st.Torch))
+                            job.TorchFailed++;
+                    }
+                }
+            }
+
+            // Kirim update rect di sekitar tiap buff cluster dan baris platform
+            foreach (int bx in buffCenters)
+            {
+                int rx = Math.Max(a.LeftX, bx - 4);
+                int rw = Math.Min(a.RightX - rx + 1, 12);
+                SendLargeTileRect(rx, a.TopY, rw, a.BottomY - a.TopY + 1);
+            }
+
+            foreach (int tierY in a.TierYs)
+            {
+                SendLargeTileRect(a.LeftX, tierY - 1, a.RightX - a.LeftX + 1, 2);
+            }
+        }
+
+        private static void SendLargeTileRect(int x0, int y0, int totalW, int totalH)
+        {
+            const int Chunk = 64;
+            for (int x = x0; x < x0 + totalW; x += Chunk)
+            {
+                byte w = (byte)Math.Min(Chunk, (x0 + totalW) - x);
+                for (int y = y0; y < y0 + totalH; y += Chunk)
+                {
+                    byte h = (byte)Math.Min(Chunk, (y0 + totalH) - y);
+                    TSPlayer.All.SendTileRect((short)x, (short)y, w, h);
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // Rumah NPC (Simpel 11x7 bertingkat 1/2/3 - TIDAK DIUBAH)
         // ---------------------------------------------------------------
 
         private void PrepareNpcHouses(TSPlayer player, List<string> parameters)
@@ -872,7 +1237,6 @@ namespace MagicBuilder
             int right = cx + HouseHalfWidth;
             int topY = fy - (floors * FloorStepHeight);
 
-            // Bersihkan area 11 x (1 + 6*floors)
             for (int y = topY; y <= fy; y++)
             {
                 for (int x = left; x <= right; x++)
@@ -885,17 +1249,14 @@ namespace MagicBuilder
                 }
             }
 
-            // Lantai paling bawah (11 tile)
             for (int x = left; x <= right; x++)
                 PlaceBlock(job, x, fy, st.Block);
 
-            // Bangun tiap lantai ke atas (masing-masing 7 tile total, berbagi pembatas lantai)
             for (int f = 0; f < floors; f++)
             {
                 int floorBottom = fy - (f * FloorStepHeight);
                 int floorTop = floorBottom - FloorStepHeight;
 
-                // Dinding samping kiri & kanan (5 tile tinggi) + dinding latar interior (9x5)
                 for (int y = floorTop + 1; y <= floorBottom - 1; y++)
                 {
                     PlaceBlock(job, left, y, st.Block);
@@ -910,7 +1271,6 @@ namespace MagicBuilder
                     }
                 }
 
-                // Langit-langit / atap lantai ini: 7 block kiri + 3 platform kanan + 1 block sudut kanan
                 for (int x = left; x <= left + 6; x++)
                     PlaceBlock(job, x, floorTop, st.Block);
 
@@ -919,11 +1279,9 @@ namespace MagicBuilder
 
                 PlaceBlock(job, right, floorTop, st.Block);
 
-                // Torch di pojok kiri atas ruang
                 if (!WorldGen.PlaceTile(left + 1, floorTop + 1, TileID.Torches, true, true, -1, st.Torch))
                     job.TorchFailed++;
 
-                // Chair & Table di kiri bawah ruang
                 if (!WorldGen.PlaceObject(left + 2, floorBottom - 1, TileID.Chairs, true, st.Chair, 0, -1, 1))
                     job.ObjectFailed++;
 
