@@ -14,7 +14,7 @@ namespace MagicBuilder
     {
         public override string Name => "MagicBuilder";
         public override string Author => "You";
-        public override Version Version => new Version(1, 1, 1, 0);
+        public override Version Version => new Version(1, 1, 2, 0);
         public override string Description => "Pilih titik pakai Ice Rod dan bangun struktur otomatis.";
 
         private const string UsePermission = "magicbuilder.use";
@@ -52,6 +52,7 @@ namespace MagicBuilder
         private const int ArenaBuffInterval = 70;
         private const int ArenaTorchInterval = 14;
 
+        private const ushort BastStatueTileType = 506;
         private const int StarInBottleStyle = 7;
         private const int HeartLanternStyle = 9;
 
@@ -958,7 +959,7 @@ namespace MagicBuilder
                     if (!WorldGen.PlaceObject(bx, a.BottomY - 1, TileID.Campfire, true, st.Campfire))
                         job.ObjectFailed++;
 
-                    if (!WorldGen.PlaceObject(bx + 4, a.BottomY - 1, TileID.BastStatue, true))
+                    if (!WorldGen.PlaceObject(bx + 4, a.BottomY - 1, BastStatueTileType, true))
                         job.ObjectFailed++;
                 }
             }
@@ -973,7 +974,7 @@ namespace MagicBuilder
                         job.ObjectFailed++;
 
                     // Bast Statue duduk di atas platform (bx+4 .. bx+5)
-                    if (!WorldGen.PlaceObject(bx + 4, tierY - 1, TileID.BastStatue, true))
+                    if (!WorldGen.PlaceObject(bx + 4, tierY - 1, BastStatueTileType, true))
                         job.ObjectFailed++;
 
                     // Heart Lantern menggantung langsung di bawah platform (bx-3)
